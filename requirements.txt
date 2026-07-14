@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+aiofiles
+python-dotenv
+requests
+httpx
+psycopg2-binary
+pymongo
+firebase-admin
+email-validator
+PyJWT[crypto]>=2.8.0

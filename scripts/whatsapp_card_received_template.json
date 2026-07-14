@@ -1,0 +1,23 @@
+{
+  "name": "card_final_ula",
+  "category": "UTILITY",
+  "language": "en",
+  "header_document_url": "https://businessscannercardbackend.onrender.com/static/pdfs/ULACAB_VC_IN-SG_Mobile_Numbers.pdf",
+  "components": [
+    {
+      "type": "HEADER",
+      "format": "DOCUMENT"
+    },
+    {
+      "type": "BODY",
+      "text": "Dear {{1}},\n\nThis is Dhana from Ulacab.com. We had the pleasure of meeting you at TTF Kolkata 2026.\n\nUlacab.com is a B2B transport provider helping Indian Travel Agents and OTAs directly book Airport Transfers and Ground Transportation across Singapore, Malaysia, Indonesia, Thailand, Vietnam, Hong Kong & Macau, South Korea, and Japan.\n\nDirect contracting with us helps you increase your profit margins. We look forward to receiving your enquiries for Airport Transfers and Ground Transportation.\n\nYou can reach us at:\n\n- +65 8605 1421\n- +91 95513 27334 (Call or WhatsApp)\n- support@ulavitech.com\n\nBest regards,\n\nDhana\nFounder/Director",
+      "example": {
+        "body_text": [
+          [
+            "Yogesh VR"
+          ]
+        ]
+      }
+    }
+  ]
+}

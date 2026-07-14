@@ -1,0 +1,25 @@
+# Secrets & credentials (never commit)
+.env
+.env.*
+!/.env.example
+*-firebase-adminsdk-*.json
+serviceAccountKey.json
+*credentials*.json
+*.pem
+*.key
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Uploads
+uploads/
+
+# Runtime state
+data/
