@@ -196,7 +196,7 @@ def send_password_reset_otp(email: str) -> dict[str, Any]:
     """Send a one-time code to the user's email."""
     if not is_email_configured():
         raise PasswordResetError(
-            "Email is not configured on the server. Set BREVO_API_KEY on Render.",
+            "Email is not configured on the server. Set GMAIL_USER + GMAIL_APP_PASSWORD (or SMTP_USER + SMTP_PASSWORD).",
             status_code=503,
         )
 

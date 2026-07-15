@@ -33,7 +33,7 @@ def check_storage() -> dict[str, Any]:
     return result
 
 
-def list_contacts() -> list[dict[str, Any]]:
+def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     if is_client_side_storage():
         return []
     if get_contact_storage_mode() == "firebase":
@@ -42,7 +42,7 @@ def list_contacts() -> list[dict[str, Any]]:
         return firebase.list_contacts()
     from services import local_db_service as local_db
 
-    return local_db.list_contacts()
+    return local_db.list_contacts(user=user)
 
 
 def get_contact(contact_id: str) -> dict[str, Any] | None:

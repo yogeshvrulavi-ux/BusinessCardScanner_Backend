@@ -2,7 +2,7 @@ import json
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from api.auth_context import get_request_app_user, get_request_app_user_for_sync, get_scanner_email_from_request
 
@@ -21,6 +21,8 @@ from api.schemas import (
     SyncOutreachOptions,
     SyncStatusBody,
 )
+from auth.constants import ROLE_ADMIN, ROLE_SUPER_ADMIN
+from auth.dependencies import get_current_user, require_role
 from services import contact_storage as storage
 from services.contact_service import (
     delete_contact,
@@ -115,8 +117,10 @@ async def storage_config():
 
 
 @router.get("/api/contacts", summary="List contacts (UI shape)")
-async def list_contacts_api():
-    return storage.list_contacts()
+async def list_contacts_api(
+    user: dict = Depends(get_current_user),
+):
+    return storage.list_contacts(user=user)
 
 
 @router.get("/api/contacts/{contact_id}")
@@ -128,9 +132,12 @@ async def get_contact_api(contact_id: str):
 
 
 @router.post("/api/contacts", summary="Save contact")
-async def create_contact_json(body: LocalContactBody, request: Request):
+async def create_contact_json(body: LocalContactBody, request: Request, user: dict = Depends(get_current_user)):
     try:
         payload = body.model_dump()
+        # Stamp ownership from authenticated user
+        if user and user.get("id"):
+            payload["created_by_user_id"] = user["id"]
         result = storage.create_contact(payload)
         contact_id = result["id"]
         response: dict[str, Any] = {
@@ -196,8 +203,17 @@ async def patch_contact_sync_status(contact_id: str, body: SyncStatusBody):
     return {"success": True, "contact": contact}
 
 
-@router.delete("/api/contacts/{contact_id}")
-async def delete_contact_api(contact_id: str, request: Request, deleteZoho: bool = False):
+@router.delete(
+    "/api/contacts/{contact_id}",
+    summary="Soft-delete a contact (Admin/SuperAdmin only)",
+    description="Marks the contact as deleted. Never permanently removes the record. Requires ADMIN or SUPER_ADMIN role.",
+)
+async def delete_contact_api(
+    contact_id: str,
+    request: Request,
+    deleteZoho: bool = False,
+    _user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN)),
+):
     contact = storage.get_contact(contact_id)
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
@@ -289,6 +305,13 @@ async def sync_single_contact_to_zoho(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.delete("/contacts/{contact_id}")
-async def remove_contact(contact_id: str):
+@router.delete(
+    "/contacts/{contact_id}",
+    summary="Soft-delete a contact (Admin/SuperAdmin only)",
+    description="Marks the contact as deleted. Requires ADMIN or SUPER_ADMIN role.",
+)
+def remove_contact(
+    contact_id: str,
+    _user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN)),
+):
     return delete_contact(contact_id)

@@ -1,0 +1,216 @@
+"""Database schema — CREATE TABLE statements for the RBAC auth system."""
+
+from __future__ import annotations
+
+import logging
+
+from db.pool import db_cursor
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Schema DDL
+# ---------------------------------------------------------------------------
+
+SCHEMA_STATEMENTS: list[str] = [
+    # ── Roles ──────────────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS roles (
+        id          SERIAL PRIMARY KEY,
+        name        VARCHAR(64)  NOT NULL UNIQUE,
+        description VARCHAR(255) NOT NULL DEFAULT '',
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    """,
+    # ── Permissions ────────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS permissions (
+        id          SERIAL PRIMARY KEY,
+        name        VARCHAR(128) NOT NULL UNIQUE,
+        description VARCHAR(255) NOT NULL DEFAULT '',
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    """,
+    # ── Role ↔ Permission mapping ──────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS role_permissions (
+        role_id       INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+        permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+        PRIMARY KEY (role_id, permission_id)
+    );
+    """,
+    # ── Companies ──────────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS companies (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        company_name  VARCHAR(255) NOT NULL,
+        company_code  VARCHAR(64)  NOT NULL UNIQUE,
+        admin_id      UUID,               -- set after the admin user is created
+        address       VARCHAR(512) NOT NULL DEFAULT '',
+        phone         VARCHAR(64)  NOT NULL DEFAULT '',
+        email         VARCHAR(255) NOT NULL DEFAULT '',
+        website       VARCHAR(512) NOT NULL DEFAULT '',
+        status        VARCHAR(32)  NOT NULL DEFAULT 'active',
+        created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    """,
+    # ── Users ──────────────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        uuid                   UUID         NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+        first_name             VARCHAR(128) NOT NULL DEFAULT '',
+        last_name              VARCHAR(128) NOT NULL DEFAULT '',
+        email                  VARCHAR(255) NOT NULL UNIQUE,
+        username               VARCHAR(128) NOT NULL UNIQUE,
+        password_hash          VARCHAR(255) NOT NULL,
+        phone                  VARCHAR(64)  NOT NULL DEFAULT '',
+        role_id                INTEGER      NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
+        company_id             UUID         REFERENCES companies(id) ON DELETE SET NULL,
+        admin_id               UUID,        -- the Admin who created this user (nullable for SuperAdmin)
+        profile_image          TEXT,
+        is_active              BOOLEAN      NOT NULL DEFAULT TRUE,
+        is_verified            BOOLEAN      NOT NULL DEFAULT FALSE,
+        failed_login_attempts  INTEGER      NOT NULL DEFAULT 0,
+        locked_until           TIMESTAMPTZ,
+        last_login             TIMESTAMPTZ,
+        last_password_change   TIMESTAMPTZ,
+        created_by             UUID,
+        updated_by             UUID,
+        created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        deleted_at             TIMESTAMPTZ
+    );
+    """,
+    # FK from companies.admin_id → users.id (added after both tables exist)
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.table_constraints
+            WHERE constraint_name = 'companies_admin_id_fkey'
+        ) THEN
+            ALTER TABLE companies
+                ADD CONSTRAINT companies_admin_id_fkey
+                FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL;
+        END IF;
+    END $$;
+    """,
+    # ── Refresh tokens ─────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id     UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash  VARCHAR(255) NOT NULL UNIQUE,
+        device      VARCHAR(255) NOT NULL DEFAULT '',
+        browser     VARCHAR(255) NOT NULL DEFAULT '',
+        ip          VARCHAR(45)  NOT NULL DEFAULT '',
+        expires_at  TIMESTAMPTZ  NOT NULL,
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        revoked_at  TIMESTAMPTZ
+    );
+    """,
+    # ── Sessions ───────────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id          UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        refresh_token_id UUID         REFERENCES refresh_tokens(id) ON DELETE SET NULL,
+        device           VARCHAR(255) NOT NULL DEFAULT '',
+        browser          VARCHAR(255) NOT NULL DEFAULT '',
+        ip               VARCHAR(45)  NOT NULL DEFAULT '',
+        login_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        last_activity    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        status           VARCHAR(32)  NOT NULL DEFAULT 'active',
+        expires_at       TIMESTAMPTZ  NOT NULL
+    );
+    """,
+    # ── Audit logs ─────────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id          BIGSERIAL PRIMARY KEY,
+        user_id     UUID,
+        action      VARCHAR(128) NOT NULL,
+        ip          VARCHAR(45)  NOT NULL DEFAULT '',
+        browser     VARCHAR(255) NOT NULL DEFAULT '',
+        user_agent  VARCHAR(512) NOT NULL DEFAULT '',
+        old_value   JSONB,
+        new_value   JSONB,
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    """,
+    # ── Password reset tokens ──────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id     UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash  VARCHAR(255) NOT NULL,
+        otp_code    VARCHAR(16)  NOT NULL,
+        expires_at  TIMESTAMPTZ  NOT NULL,
+        used_at     TIMESTAMPTZ,
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    """,
+    # ── Email verification tokens ──────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS email_verification_tokens (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id     UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash  VARCHAR(255) NOT NULL,
+        new_email   VARCHAR(255) NOT NULL DEFAULT '',
+        expires_at  TIMESTAMPTZ  NOT NULL,
+        used_at     TIMESTAMPTZ,
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    """,
+    # ── Indexes ────────────────────────────────────────────────────────────
+    "CREATE INDEX IF NOT EXISTS idx_users_email        ON users(email);",
+    "CREATE INDEX IF NOT EXISTS idx_users_username     ON users(username);",
+    "CREATE INDEX IF NOT EXISTS idx_users_company_id   ON users(company_id);",
+    "CREATE INDEX IF NOT EXISTS idx_users_role_id      ON users(role_id);",
+    "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_user       ON sessions(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_audit_logs_user     ON audit_logs(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_audit_logs_action   ON audit_logs(action);",
+    # ── Contacts: soft-delete columns (idempotent) ────────────────────────
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'contacts' AND column_name = 'is_deleted'
+        ) THEN
+            ALTER TABLE contacts ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE;
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'contacts' AND column_name = 'deleted_at'
+        ) THEN
+            ALTER TABLE contacts ADD COLUMN deleted_at TIMESTAMPTZ;
+        END IF;
+    END $$;
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_contacts_is_deleted ON contacts(is_deleted);",
+    # ── Contacts: ownership column (idempotent) ──────────────────────────
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'contacts' AND column_name = 'created_by_user_id'
+        ) THEN
+            ALTER TABLE contacts ADD COLUMN created_by_user_id UUID;
+        END IF;
+    END $$;
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_contacts_created_by ON contacts(created_by_user_id);",
+]
+
+
+def ensure_schema() -> None:
+    """Create all auth-related tables if they do not yet exist."""
+    with db_cursor(commit=True) as cur:
+        for stmt in SCHEMA_STATEMENTS:
+            cur.execute(stmt)
+    logger.info("Database schema ensured (auth tables created if missing).")

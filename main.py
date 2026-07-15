@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
 from utils.env_loader import load_env
@@ -50,7 +51,7 @@ from config.settings import (  # noqa: E402
     CORS_ORIGIN_REGEX,
     get_allowed_origins,
 )
-from middleware.auth_middleware import AuthMiddleware  # noqa: E402
+from auth.middleware import RBACMiddleware  # noqa: E402
 from services.email_service import email_queue  # noqa: E402
 from services.whatsapp_service import whatsapp_queue  # noqa: E402
 
@@ -61,6 +62,19 @@ async def lifespan(app: FastAPI):
 
     from services.whatsapp_webhook_setup import ensure_waba_webhook_subscription
 
+    # ── Database init ─────────────────────────────────────────────────
+    from db.pool import init_pool, close_pool
+    from db.schema import ensure_schema
+    from db.seed import run_seed
+
+    try:
+        init_pool()
+        ensure_schema()
+        run_seed()
+    except Exception as exc:
+        logger.warning("Database schema/seed skipped: %s", exc)
+
+    # ── Background queues ─────────────────────────────────────────────
     await whatsapp_queue.start()
     await email_queue.start()
     try:
@@ -72,7 +86,11 @@ async def lifespan(app: FastAPI):
     yield
     await whatsapp_queue.stop()
     await email_queue.stop()
+    close_pool()
 
+
+# ── Swagger security scheme ───────────────────────────────────────────
+bearer_scheme = HTTPBearer(auto_error=False)
 
 app = FastAPI(
     title=APP_TITLE,
@@ -84,6 +102,12 @@ app = FastAPI(
     openapi_url="/openapi.json",
     openapi_tags=[
         {"name": "Health", "description": "Service health and connectivity checks"},
+        {"name": "Auth", "description": "Login, logout, refresh, forgot/reset password, email verification"},
+        {"name": "Users", "description": "User management (SuperAdmin + Admin)"},
+        {"name": "Companies", "description": "Company management (SuperAdmin)"},
+        {"name": "Sessions", "description": "Active session and device management"},
+        {"name": "Profile", "description": "Self-service profile, password, and email"},
+        {"name": "Audit", "description": "Audit log viewer (SuperAdmin + Admin)"},
         {"name": "Contacts", "description": "Local DB contact CRUD, duplicates, and Zoho sync"},
         {"name": "Leads", "description": "Zoho CRM leads API"},
         {"name": "Integrations", "description": "WhatsApp and email queue integrations"},
@@ -95,7 +119,7 @@ app = FastAPI(
 allowed_origins = get_allowed_origins()
 
 # Auth runs inside CORS so 401/403 responses still include Access-Control-Allow-Origin.
-app.add_middleware(AuthMiddleware)
+app.add_middleware(RBACMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.add_middleware(
@@ -109,6 +133,61 @@ app.add_middleware(
 
 app.include_router(build_api_router())
 app.include_router(webhook_router)
+
+
+# ---------------------------------------------------------------------------
+# Custom OpenAPI — inject Bearer security scheme + lock icons on protected routes
+# ---------------------------------------------------------------------------
+from auth.constants import is_public_path  # noqa: E402
+
+_PUBLIC_OPENAPI = {"/", "/health", "/webhook"}
+
+
+def _patch_openapi_schema() -> None:
+    """Post-process the generated OpenAPI schema to add JWT Bearer auth."""
+    schema = app.openapi_schema
+    if schema is None:
+        schema = app.openapi()
+
+    # Register the Bearer security scheme
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})
+    schema["components"]["securitySchemes"]["Bearer"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Paste your JWT access token (no 'Bearer ' prefix).",
+    }
+
+    # Mark each operation: public → security=[], protected → security=[{"Bearer": []}]
+    for path, path_item in schema.get("paths", {}).items():
+        is_pub = is_public_path(path) or path in _PUBLIC_OPENAPI
+        for method in ("get", "post", "put", "patch", "delete"):
+            operation = path_item.get(method)
+            if operation is None:
+                continue
+            if "security" not in operation:
+                if is_pub:
+                    operation["security"] = []
+                else:
+                    operation["security"] = [{"Bearer": []}]
+
+    app.openapi_schema = schema
+
+
+# ---------------------------------------------------------------------------
+# Override app.openapi so the patched schema is used by /docs and /openapi.json
+# ---------------------------------------------------------------------------
+_original_openapi = app.openapi
+
+
+def custom_openapi():
+    if app.openapi_schema is None:
+        _original_openapi()
+        _patch_openapi_schema()
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi  # type: ignore[method-assign]
 
 
 @app.get(
@@ -137,21 +216,20 @@ def root_head():
     tags=["Health"],
     summary="Health check",
     description=(
-        "Reports Zoho, email (Brevo/Gmail), WhatsApp, storage, and webhook configuration. "
+        "Reports Zoho, email (SMTP), WhatsApp, storage, and webhook configuration. "
         "OCR runs in the browser — not on this API."
     ),
 )
 def health_check():
     from services.contact_storage import check_storage, storage_label
     from services.email_service import (
-        GMAIL_USER,
-        brevo_sender_email,
+        SMTP_HOST,
+        SMTP_USER,
         get_email_provider,
-        is_brevo_api_configured,
-        is_brevo_smtp_configured,
         is_email_configured,
         is_email_test_recipient_configured,
-        is_gmail_configured,
+        is_smtp_configured,
+        smtp_sender_email,
     )
     from api.routes.webhook import get_webhook_verify_token
     from services.whatsapp_service import get_whatsapp_config_summary, is_whatsapp_configured
@@ -180,11 +258,10 @@ def health_check():
         "email": {
             "configured": is_email_configured(),
             "provider": provider,
-            "brevo_api_configured": is_brevo_api_configured(),
-            "brevo_smtp_configured": is_brevo_smtp_configured(),
-            "gmail_smtp_configured": is_gmail_configured(),
+            "smtp_configured": is_smtp_configured(),
+            "smtp_host": SMTP_HOST,
             "test_recipient_env_set": is_email_test_recipient_configured(),
-            "from": brevo_sender_email() or GMAIL_USER or None,
+            "from": smtp_sender_email() or SMTP_USER or None,
         },
         "whatsapp": {
             "configured": is_whatsapp_configured(),

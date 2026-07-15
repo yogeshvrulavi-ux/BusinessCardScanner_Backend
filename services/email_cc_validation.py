@@ -1,4 +1,4 @@
-"""CC address validation for thank-you emails (Brevo and SMTP)."""
+"""CC address validation for thank-you emails (SMTP)."""
 
 from __future__ import annotations
 

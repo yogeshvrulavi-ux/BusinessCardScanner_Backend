@@ -1,4 +1,6 @@
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class WhatsAppMessageRequest(BaseModel):
@@ -257,3 +259,130 @@ class SyncFromLocalRequest(BaseModel):
     connectionMode: str = "online"
     skipWhatsApp: bool = False
     skipEmail: bool = False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Auth / RBAC schemas
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"identifier": "superadmin@ulavi.com", "password": "SuperAdmin@123"}]})
+
+    identifier: str = Field(..., description="Email or username")
+    password: str = Field(..., min_length=1)
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(..., description="Refresh token from login response")
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    password: str = Field(min_length=8)
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int = 900
+
+
+class UserInfo(BaseModel):
+    id: str
+    email: str
+    first_name: str = ""
+    last_name: str = ""
+    username: str = ""
+    phone: str = ""
+    role: str = ""
+    company_id: str | None = None
+    admin_id: str | None = None
+    is_active: bool = True
+    is_verified: bool = False
+    permissions: list[str] = []
+
+
+class CreateUserRequest(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "first_name": "John", "last_name": "Doe", "email": "john@example.com",
+        "username": "johndoe", "password": "Password@123", "role": "USER", "phone": "+1234567890",
+    }]})
+
+    first_name: str = Field(..., min_length=1)
+    last_name: str = Field(..., min_length=1)
+    email: EmailStr
+    username: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=8)
+    role: str = Field(default="USER", description="SUPER_ADMIN, ADMIN, or USER")
+    company_id: str | None = None
+    phone: str = ""
+
+
+class UpdateUserRequest(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    phone: str | None = None
+    role: str | None = None
+    is_active: bool | None = None
+
+
+class UserStatusRequest(BaseModel):
+    is_active: bool
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=8)
+
+
+class CreateCompanyRequest(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "company_name": "Acme Corp", "company_code": "ACME",
+        "admin_email": "admin@acme.com", "admin_password": "Admin@123",
+    }]})
+
+    company_name: str = Field(..., min_length=1)
+    company_code: str = Field(..., min_length=2)
+    admin_first_name: str = "Admin"
+    admin_last_name: str = ""
+    admin_email: EmailStr
+    admin_username: str = Field(..., min_length=3)
+    admin_password: str = Field(..., min_length=8)
+    address: str = ""
+    phone: str = ""
+    email: str = ""
+    website: str = ""
+
+
+class UpdateCompanyRequest(BaseModel):
+    company_name: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    website: str | None = None
+    status: str | None = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+
+class ChangeEmailRequest(BaseModel):
+    new_email: EmailStr
+
+
+class UpdateProfileRequest(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    phone: str | None = None

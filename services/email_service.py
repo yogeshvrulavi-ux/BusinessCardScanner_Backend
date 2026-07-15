@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 _RECENT_SENDS: dict[str, float] = {}
 _SEND_DEDUPE_SECONDS = 120
 
-MAIL_SERVER = "smtp.gmail.com"
-MAIL_PORT = 587
+DEFAULT_SMTP_HOST = "smtp.gmail.com"
+DEFAULT_SMTP_PORT = 587
 
 SUBJECT = "Thank You for Your Interest"
 CC_SCANNED_SUBJECT_PREFIX = "Scanned contact:"
@@ -44,33 +44,34 @@ def _normalize_env(value: str | None) -> str:
     return value.strip().strip('"').strip("'")
 
 
-GMAIL_USER = _normalize_env(os.getenv("GMAIL_USER"))
-
-
 def _normalize_gmail_app_password(value: str | None) -> str:
-    """Gmail App Passwords are 16 chars; remove spaces from .env (e.g. 'abcd efgh')."""
+    """SMTP app passwords (e.g. Gmail's) are 16 chars; remove spaces from .env (e.g. 'abcd efgh')."""
     return _normalize_env(value).replace(" ", "")
 
 
+GMAIL_USER = _normalize_env(os.getenv("GMAIL_USER"))
 GMAIL_APP_PASSWORD = _normalize_gmail_app_password(os.getenv("GMAIL_APP_PASSWORD"))
-BREVO_API_KEY = _normalize_env(os.getenv("BREVO_API_KEY"))
-BREVO_SMTP_SERVER = _normalize_env(os.getenv("BREVO_SMTP_SERVER")) or "smtp-relay.brevo.com"
-BREVO_SMTP_PORT = int(_normalize_env(os.getenv("BREVO_SMTP_PORT")) or "587")
-BREVO_SMTP_LOGIN = _normalize_env(os.getenv("BREVO_SMTP_LOGIN"))
-BREVO_SMTP_PASSWORD = _normalize_env(os.getenv("BREVO_SMTP_PASSWORD"))
-BREVO_SENDER_EMAIL = _normalize_env(os.getenv("BREVO_SENDER_EMAIL"))
+
+# SMTP is the only email transport. GMAIL_USER / GMAIL_APP_PASSWORD are the default
+# credentials; SMTP_USER / SMTP_PASSWORD / SMTP_HOST / SMTP_PORT override them for any
+# other SMTP provider without touching code.
+SMTP_HOST = _normalize_env(os.getenv("SMTP_HOST")) or DEFAULT_SMTP_HOST
+SMTP_PORT = int(_normalize_env(os.getenv("SMTP_PORT")) or str(DEFAULT_SMTP_PORT))
+SMTP_USER = _normalize_env(os.getenv("SMTP_USER")) or GMAIL_USER
+SMTP_PASSWORD = _normalize_gmail_app_password(os.getenv("SMTP_PASSWORD")) or GMAIL_APP_PASSWORD
+
 BUSINESS_COMPANY_NAME = _normalize_env(os.getenv("BUSINESS_COMPANY_NAME")) or "CardSync"
 BUSINESS_PHONE = _normalize_env(os.getenv("BUSINESS_PHONE")) or ""
 BUSINESS_WEBSITE = _normalize_env(os.getenv("BUSINESS_WEBSITE")) or ""
-BUSINESS_EMAIL = _normalize_env(os.getenv("BUSINESS_EMAIL")) or GMAIL_USER or BREVO_SENDER_EMAIL
+BUSINESS_EMAIL = _normalize_env(os.getenv("BUSINESS_EMAIL")) or SMTP_USER
 EMAIL_TEST_RECIPIENT = _normalize_env(os.getenv("EMAIL_TEST_RECIPIENT"))
 _RENDER_SMTP_HINT = (
-    "Render free tier blocks outbound SMTP (port 587). "
-    "Set BREVO_API_KEY on Render (HTTPS); use BREVO_SMTP_* or Gmail SMTP locally only."
+    "Some hosts (e.g. Render's free tier) block outbound SMTP on port 587. "
+    "Use a host/network that permits SMTP, or an SMTP relay that allows it."
 )
 
 _SMTP_AUTH_HELP = (
-    "Gmail SMTP authentication failed. Create a Google App Password "
+    "SMTP authentication failed. If using Gmail, create a Google App Password "
     "(not your login password): enable 2-Step Verification, then visit "
     "https://myaccount.google.com/apppasswords and set GMAIL_APP_PASSWORD "
     "to the 16-character password for GMAIL_USER."
@@ -86,24 +87,21 @@ def _auto_send_enabled() -> bool:
     }
 
 
+def is_smtp_configured() -> bool:
+    return bool(SMTP_USER and SMTP_PASSWORD)
+
+
+# Backward-compatible alias — SMTP is the only transport now.
 def is_gmail_configured() -> bool:
-    return bool(GMAIL_USER and GMAIL_APP_PASSWORD)
+    return is_smtp_configured()
 
 
-def brevo_sender_email() -> str:
-    return BREVO_SENDER_EMAIL or BUSINESS_EMAIL or GMAIL_USER
-
-
-def is_brevo_api_configured() -> bool:
-    return bool(BREVO_API_KEY and brevo_sender_email())
-
-
-def is_brevo_smtp_configured() -> bool:
-    return bool(BREVO_SMTP_LOGIN and BREVO_SMTP_PASSWORD and brevo_sender_email())
+def smtp_sender_email() -> str:
+    return BUSINESS_EMAIL or SMTP_USER
 
 
 def is_email_configured() -> bool:
-    return is_brevo_api_configured() or is_brevo_smtp_configured() or is_gmail_configured()
+    return is_smtp_configured()
 
 
 def is_email_test_recipient_configured() -> bool:
@@ -117,13 +115,9 @@ def is_test_recipient_mode() -> bool:
 
 
 def get_email_provider() -> str | None:
-    """Prefer Brevo HTTPS API (Render-safe), then Brevo SMTP, then Gmail SMTP."""
-    if is_brevo_api_configured():
-        return "brevo_api"
-    if is_brevo_smtp_configured():
-        return "brevo_smtp"
-    if is_gmail_configured():
-        return "gmail_smtp"
+    """SMTP (smtplib) is the only email transport."""
+    if is_smtp_configured():
+        return "smtp"
     return None
 
 
@@ -236,7 +230,7 @@ def _send_via_smtp_relay(
     return result
 
 
-def _send_via_brevo_api(
+def _send_via_smtp(
     to_address: str,
     *,
     subject: str,
@@ -244,140 +238,26 @@ def _send_via_brevo_api(
     html_body: str,
     cc_addresses: list[str] | None = None,
 ) -> dict[str, Any]:
-    import httpx
-
-    result: dict[str, Any] = {
-        "success": False,
-        "recipient_email": to_address,
-        "cc_emails": [],
-        "error": None,
-    }
-    if not is_brevo_api_configured():
-        result["error"] = "Brevo API is not configured. Set BREVO_API_KEY and BREVO_SENDER_EMAIL."
-        return result
-
-    cc_list, cc_invalid = _prepare_cc_addresses(cc_addresses, to_address=to_address)
-    result["cc_emails"] = cc_list
-    if cc_invalid:
-        result["cc_invalid"] = cc_invalid
-
-    sender_email = brevo_sender_email()
-    payload: dict[str, Any] = {
-        "sender": {"name": BUSINESS_COMPANY_NAME, "email": sender_email},
-        "to": [{"email": to_address, "name": "Contact"}],
-        "subject": subject,
-        "htmlContent": html_body,
-        "textContent": plain_body,
-    }
-    if cc_list:
-        payload["cc"] = [{"email": email, "name": "Owner"} for email in cc_list]
-    reply_to = BUSINESS_EMAIL or sender_email
-    if reply_to:
-        payload["replyTo"] = {"email": reply_to}
-
-    logger.info(
-        "Brevo API request to=%s cc=%s subject=%r",
-        _redact_email(to_address),
-        [_redact_email(e) for e in cc_list],
-        subject,
-    )
-
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                "https://api.brevo.com/v3/smtp/email",
-                headers={
-                    "api-key": BREVO_API_KEY,
-                    "Content-Type": "application/json",
-                    "accept": "application/json",
-                },
-                json=payload,
-            )
-        if response.status_code >= 400:
-            detail = response.text
-            try:
-                detail = response.json().get("message") or detail
-            except Exception:
-                pass
-            result["error"] = f"Brevo API error ({response.status_code}): {detail}"
-            logger.error(
-                "Brevo send failed for %s: %s",
-                _redact_email(to_address),
-                result["error"],
-            )
-            return result
-    except Exception as exc:
-        result["error"] = f"Brevo request failed: {exc}"
-        logger.error(
-            "Brevo send failed for %s: %s",
-            _redact_email(to_address),
-            exc,
-            exc_info=True,
-        )
-        return result
-
-    logger.info("SUCCESS: Thank-you email sent via Brevo API to %s", _redact_email(to_address))
-    result["success"] = True
-    return result
-
-
-def _send_via_brevo_smtp(
-    to_address: str,
-    *,
-    subject: str,
-    plain_body: str,
-    html_body: str,
-    cc_addresses: list[str] | None = None,
-) -> dict[str, Any]:
-    if not is_brevo_smtp_configured():
+    """Send an email over SMTP (smtplib) using the configured credentials."""
+    if not is_smtp_configured():
         return {
             "success": False,
             "recipient_email": to_address,
-            "error": "Brevo SMTP is not configured. Set BREVO_SMTP_LOGIN and BREVO_SMTP_PASSWORD.",
+            "error": "SMTP is not configured. Set GMAIL_USER + GMAIL_APP_PASSWORD (or SMTP_USER + SMTP_PASSWORD) in .env.",
         }
-    sender = brevo_sender_email()
-    return _send_via_smtp_relay(
-        to_address,
-        subject=subject,
-        plain_body=plain_body,
-        html_body=html_body,
-        smtp_host=BREVO_SMTP_SERVER,
-        smtp_port=BREVO_SMTP_PORT,
-        smtp_user=BREVO_SMTP_LOGIN,
-        smtp_password=BREVO_SMTP_PASSWORD,
-        from_address=_format_from_address(sender),
-        reply_to=BUSINESS_EMAIL or sender,
-        provider_label="Brevo SMTP",
-        cc_addresses=cc_addresses,
-    )
-
-
-def _send_via_gmail_smtp(
-    to_address: str,
-    *,
-    subject: str,
-    plain_body: str,
-    html_body: str,
-    cc_addresses: list[str] | None = None,
-) -> dict[str, Any]:
-    if not is_gmail_configured():
-        return {
-            "success": False,
-            "recipient_email": to_address,
-            "error": "Gmail SMTP is not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD.",
-        }
+    sender = smtp_sender_email()
     result = _send_via_smtp_relay(
         to_address,
         subject=subject,
         plain_body=plain_body,
         html_body=html_body,
-        smtp_host=MAIL_SERVER,
-        smtp_port=MAIL_PORT,
-        smtp_user=GMAIL_USER,
-        smtp_password=GMAIL_APP_PASSWORD,
-        from_address=GMAIL_USER,
-        reply_to=BUSINESS_EMAIL or GMAIL_USER,
-        provider_label="Gmail SMTP",
+        smtp_host=SMTP_HOST,
+        smtp_port=SMTP_PORT,
+        smtp_user=SMTP_USER,
+        smtp_password=SMTP_PASSWORD,
+        from_address=_format_from_address(sender),
+        reply_to=BUSINESS_EMAIL or sender,
+        provider_label="SMTP",
         cc_addresses=cc_addresses,
     )
     if not result["success"] and "authentication failed" in str(result.get("error", "")).lower():
@@ -393,37 +273,20 @@ def _deliver_email(
     html_body: str,
     cc_addresses: list[str] | None = None,
 ) -> dict[str, Any]:
-    provider = get_email_provider()
-    brevo_cc = cc_addresses if provider in ("brevo_api", "brevo_smtp") else None
-    if provider == "brevo_api":
-        return _send_via_brevo_api(
+    if is_smtp_configured():
+        return _send_via_smtp(
             to_address,
             subject=subject,
             plain_body=plain_body,
             html_body=html_body,
-            cc_addresses=brevo_cc,
-        )
-    if provider == "brevo_smtp":
-        return _send_via_brevo_smtp(
-            to_address,
-            subject=subject,
-            plain_body=plain_body,
-            html_body=html_body,
-            cc_addresses=brevo_cc,
-        )
-    if provider == "gmail_smtp":
-        return _send_via_gmail_smtp(
-            to_address,
-            subject=subject,
-            plain_body=plain_body,
-            html_body=html_body,
+            cc_addresses=cc_addresses,
         )
     return {
         "success": False,
         "recipient_email": to_address,
         "error": (
-            "Email is not configured. On Render set BREVO_API_KEY + BREVO_SENDER_EMAIL; "
-            "locally you may use BREVO_SMTP_* or GMAIL_USER + GMAIL_APP_PASSWORD."
+            "Email is not configured. Set GMAIL_USER + GMAIL_APP_PASSWORD "
+            "(or SMTP_USER + SMTP_PASSWORD) in .env."
         ),
     }
 
@@ -660,9 +523,9 @@ def _send_cc_scanned_details_emails(
     *,
     contact: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Send the CC-only scanned-details template as separate emails (Brevo only)."""
+    """Send the CC-only scanned-details template as separate emails (SMTP)."""
     provider = get_email_provider()
-    if provider not in ("brevo_api", "brevo_smtp") or not cc_addresses:
+    if provider != "smtp" or not cc_addresses:
         return []
 
     plain_body, html_body = build_cc_scanned_contact_body(contact)
@@ -754,8 +617,8 @@ def send_business_thank_you_email(
 
     if not is_email_configured():
         error = (
-            "Email is not configured. On Render set BREVO_API_KEY + BREVO_SENDER_EMAIL; "
-            "locally set BREVO_SMTP_* or GMAIL_USER + GMAIL_APP_PASSWORD."
+            "Email is not configured. Set GMAIL_USER + GMAIL_APP_PASSWORD "
+            "(or SMTP_USER + SMTP_PASSWORD) in .env."
         )
         logger.error("Email send failed: %s", error)
         result["error"] = error
@@ -768,12 +631,10 @@ def send_business_thank_you_email(
     if cc_invalid:
         result["cc_invalid"] = cc_invalid
     logger.info(
-        "Sending business thank-you email via %s -> to (User)=%s cc (Owner, Brevo only)=%s subject=%r",
+        "Sending business thank-you email via %s -> to (User)=%s cc (Owner)=%s subject=%r",
         provider,
         _redact_email(to_address),
-        [_redact_email(e) for e in cc_list]
-        if provider in ("brevo_api", "brevo_smtp")
-        else "(default — no CC)",
+        [_redact_email(e) for e in cc_list] or "(none)",
         SUBJECT,
     )
 
@@ -786,12 +647,12 @@ def send_business_thank_you_email(
     )
 
     result["success"] = delivery.get("success", False)
-    result["cc_emails"] = cc_list if provider in ("brevo_api", "brevo_smtp") else []
+    result["cc_emails"] = cc_list if provider == "smtp" else []
     if cc_invalid and "cc_invalid" not in result:
         result["cc_invalid"] = cc_invalid
     result["error"] = delivery.get("error")
 
-    if result["success"] and cc_list and contact and provider in ("brevo_api", "brevo_smtp"):
+    if result["success"] and cc_list and contact and provider == "smtp":
         cc_results = _send_cc_scanned_details_emails(cc_list, contact=contact)
         result["cc_delivery"] = cc_results
         cc_failures = [r for r in cc_results if not r.get("success")]
@@ -901,9 +762,10 @@ async def schedule_email_for_contact(
         return skipped
 
     if not is_email_configured():
-        logger.warning("Email auto-send skipped: email provider is not configured.")
+        logger.warning("Email auto-send skipped: SMTP is not configured.")
         skipped["error"] = (
-            "Email is not configured. On Render set BREVO_API_KEY + BREVO_SENDER_EMAIL."
+            "Email is not configured. Set GMAIL_USER + GMAIL_APP_PASSWORD "
+            "(or SMTP_USER + SMTP_PASSWORD) in .env."
         )
         return skipped
 
@@ -1114,7 +976,8 @@ def _send_custom_email(
 
     if not is_email_configured():
         result["error"] = (
-            "Email is not configured. On Render set BREVO_API_KEY + BREVO_SENDER_EMAIL."
+            "Email is not configured. Set GMAIL_USER + GMAIL_APP_PASSWORD "
+            "(or SMTP_USER + SMTP_PASSWORD) in .env."
         )
         return result
 

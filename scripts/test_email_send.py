@@ -46,8 +46,8 @@ def main() -> int:
 
     if not is_email_configured():
         print(
-            "Email not configured. Set BREVO_API_KEY + BREVO_SENDER_EMAIL, "
-            "or BREVO_SMTP_*, or GMAIL_USER + GMAIL_APP_PASSWORD in .env",
+            "Email not configured. Set GMAIL_USER + GMAIL_APP_PASSWORD "
+            "(or SMTP_USER + SMTP_PASSWORD) in .env",
             file=sys.stderr,
         )
         return 1

@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth_context import (
     app_user_filter_kwargs,
@@ -16,6 +16,8 @@ from api.outreach import (
     whatsapp_response,
 )
 from api.schemas import CreateLeadRequest, SyncFromLocalRequest, ZohoLeadSummary
+from auth.constants import ROLE_ADMIN, ROLE_SUPER_ADMIN
+from auth.dependencies import require_role
 from services import local_db_service as local_db
 from services.contact_service import _contact_to_zoho_payload, sync_payload_to_zoho
 from services.local_db_service import LocalDbError
@@ -119,8 +121,16 @@ async def list_leads_route(request: Request):
         ) from exc
 
 
-@router.delete("/{lead_id}")
-async def delete_lead_route(lead_id: str, request: Request):
+@router.delete(
+    "/{lead_id}",
+    summary="Soft-delete a Zoho lead (Admin/SuperAdmin only)",
+    description="Marks the Zoho lead as deleted and soft-deletes the local contact. Requires ADMIN or SUPER_ADMIN role.",
+)
+async def delete_lead_route(
+    lead_id: str,
+    request: Request,
+    _user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN)),
+):
     if not lead_id.strip():
         raise HTTPException(status_code=400, detail="Lead id is required.")
     try:

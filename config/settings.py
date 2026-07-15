@@ -5,15 +5,29 @@ import re
 APP_TITLE = "CardSync AI API"
 APP_VERSION = "1.0.0"
 APP_DESCRIPTION = (
-    "CardSync AI backend: Zoho CRM leads, Brevo email, WhatsApp Cloud API, Meta webhooks, and Python card OCR.\n\n"
-    "POST `/scan-card` runs multi-pass Tesseract extraction; the frontend falls back to browser OCR when offline.\n\n"
-    "**Zoho Features field:** `eventName` → `Event: {name}` and user `notes` → `Notes: {text}` "
-    "(both stored in Zoho Lead Description / Features).\n\n"
-    "**Swagger UI:** `/docs` · **ReDoc:** `/redoc` · **WhatsApp webhook:** `GET/POST /webhook`"
+    "Business card scanner with Zoho CRM sync, WhatsApp/Email outreach, "
+    "and RBAC-authenticated multi-tenant contact management."
 )
+
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 5000
+
+# ── JWT / Auth Settings ─────────────────────────────────────────────────
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-production")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+JWT_REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+# ── SuperAdmin Bootstrap ────────────────────────────────────────────────
+SUPERADMIN_EMAIL = os.getenv("SUPERADMIN_EMAIL", "superadmin@ulavi.com")
+SUPERADMIN_PASSWORD = os.getenv("SUPERADMIN_PASSWORD", "SuperAdmin@123")
+
+# ── Session & Lockout ───────────────────────────────────────────────────
+SESSION_TIMEOUT_MINUTES = int(os.getenv("SESSION_TIMEOUT_MINUTES", "30"))
+SESSION_ABSOLUTE_TIMEOUT_HOURS = int(os.getenv("SESSION_ABSOLUTE_TIMEOUT_HOURS", "24"))
+MAX_FAILED_LOGIN_ATTEMPTS = int(os.getenv("MAX_FAILED_LOGIN_ATTEMPTS", "5"))
+ACCOUNT_LOCK_MINUTES = int(os.getenv("ACCOUNT_LOCK_MINUTES", "30"))
 
 NETLIFY_FRONTEND_ORIGIN = "https://cardsyncai.netlify.app"
 

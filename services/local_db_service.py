@@ -120,7 +120,7 @@ def _row_to_contact(row: dict[str, Any]) -> dict[str, Any]:
     if hasattr(updated, "isoformat"):
         updated = updated.isoformat()
 
-    return {
+    result = {
         "id": str(row["id"]),
         "name": name,
         "fullName": name,
@@ -148,17 +148,28 @@ def _row_to_contact(row: dict[str, Any]) -> dict[str, Any]:
         "status": status,
         "zohoSynced": zoho_synced,
         "created_at": created or "",
+        "updatedAt": updated or "",
         "lastSync": (
-            "Synced to Zoho"
+            "Synced"
             if status == "synced"
-            else "Local PostgreSQL · pending Zoho"
+            else "Pending sync"
             if sync_status == "local_only"
-            else str(updated or "Pending Zoho sync")
+            else str(updated or "Pending")
         ),
         "channels": {"whatsapp": bool(row.get("phone")), "email": bool(row.get("email"))},
         "whatsappSent": has_whatsapp_sent({"notes": row.get("notes") or ""}),
         "emailSent": has_email_sent({"notes": row.get("notes") or ""}),
     }
+
+    # Ownership fields (from JOIN with users/companies)
+    if "admin_name" in row:
+        result["admin_name"] = row.get("admin_name") or ""
+    if "user_name" in row:
+        result["user_name"] = row.get("user_name") or ""
+    if "created_by_user_id" in row:
+        result["created_by_user_id"] = str(row.get("created_by_user_id") or "")
+
+    return result
 
 
 def _payload_to_local_body(
@@ -213,13 +224,37 @@ def image_path_to_base64(image_path: str | None) -> str | None:
     return f"data:{mime};base64,{encoded}"
 
 
-def list_contacts() -> list[dict[str, Any]]:
+def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """List contacts with ownership info. Optionally filter by user role/company."""
     try:
         with _connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    'SELECT * FROM contacts ORDER BY "createdAt" DESC',
-                )
+                base_query = """
+                    SELECT c.*,
+                           COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
+                           COALESCE(comp.company_name, '') AS admin_name
+                    FROM contacts c
+                    LEFT JOIN users u ON c.created_by_user_id = u.id
+                    LEFT JOIN companies comp ON u.company_id = comp.id
+                    WHERE (c.is_deleted = FALSE OR c.is_deleted IS NULL)
+                """
+                params: list[Any] = []
+
+                # RBAC: scope contacts by role
+                if user:
+                    role = user.get("role", "")
+                    company_id = user.get("company_id")
+                    user_id = user.get("id")
+                    if role == "USER" and user_id:
+                        base_query += " AND c.created_by_user_id = %s"
+                        params.append(user_id)
+                    elif role == "ADMIN" and company_id:
+                        base_query += " AND u.company_id = %s"
+                        params.append(company_id)
+                    # SUPER_ADMIN sees all
+
+                base_query += ' ORDER BY c."createdAt" DESC'
+                cur.execute(base_query, params)
                 rows = cur.fetchall()
         return [_row_to_contact(dict(row)) for row in rows]
     except LocalDbError:
@@ -233,7 +268,10 @@ def get_contact(contact_id: str) -> dict[str, Any] | None:
     try:
         with _connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM contacts WHERE id = %s", (contact_id,))
+                cur.execute(
+                    "SELECT * FROM contacts WHERE id = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
+                    (contact_id,),
+                )
                 row = cur.fetchone()
         if not row:
             return None
@@ -265,9 +303,9 @@ def create_contact(
                         phone, "secondaryPhone", email, "secondaryEmail", website,
                         "secondaryWebsite", address, "secondaryAddress", "socialLinks",
                         "gstNumber", notes, "cardImageBase64", "syncStatus", "zohoLeadId",
-                        "createdAt", "updatedAt"
+                        "createdAt", "updatedAt", created_by_user_id
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     """,
                     (
@@ -293,6 +331,7 @@ def create_contact(
                         body.get("zohoLeadId"),
                         now,
                         now,
+                        contact_data.get("created_by_user_id"),
                     ),
                 )
             conn.commit()
@@ -355,13 +394,22 @@ def update_contact(contact_id: str, contact_data: dict[str, Any]) -> dict[str, A
     return {"success": True, "id": contact_id}
 
 
-def delete_contact(contact_id: str) -> dict[str, Any]:
+def soft_delete_contact(contact_id: str) -> dict[str, Any]:
+    """Soft-delete: set is_deleted=TRUE and deleted_at=NOW(). Never permanently removes the row."""
+    now = datetime.utcnow()
     try:
         with _connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM contacts WHERE id = %s", (contact_id,))
+                cur.execute(
+                    """
+                    UPDATE contacts
+                    SET is_deleted = TRUE, deleted_at = %s, "updatedAt" = %s
+                    WHERE id = %s AND (is_deleted = FALSE OR is_deleted IS NULL)
+                    """,
+                    (now, now, contact_id),
+                )
                 if cur.rowcount == 0:
-                    return {"success": False, "message": "Contact not found"}
+                    return {"success": False, "message": "Contact not found or already deleted"}
             conn.commit()
     except LocalDbError:
         raise
@@ -369,15 +417,29 @@ def delete_contact(contact_id: str) -> dict[str, Any]:
         raise LocalDbError(str(exc)) from exc
     return {
         "success": True,
-        "message": f"Contact {contact_id} deleted from PostgreSQL",
+        "message": f"Contact {contact_id} soft-deleted",
+        "deleted_at": now.isoformat(),
     }
 
 
+# Legacy alias — some callers still import delete_contact
+delete_contact = soft_delete_contact
+
+
 def delete_contact_by_zoho_lead_id(zoho_lead_id: str) -> dict[str, Any]:
+    """Soft-delete contacts matching a Zoho lead ID."""
+    now = datetime.utcnow()
     try:
         with _connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM contacts WHERE \"zohoLeadId\" = %s", (zoho_lead_id,))
+                cur.execute(
+                    """
+                    UPDATE contacts
+                    SET is_deleted = TRUE, deleted_at = %s, "updatedAt" = %s
+                    WHERE "zohoLeadId" = %s AND (is_deleted = FALSE OR is_deleted IS NULL)
+                    """,
+                    (now, now, zoho_lead_id),
+                )
                 deleted = cur.rowcount
             conn.commit()
         return {"success": True, "deleted": deleted}
@@ -410,10 +472,19 @@ def patch_sync_status(
 
 
 def delete_all_local_db_contacts() -> dict:
+    """Soft-delete all contacts (never permanently removes rows)."""
+    now = datetime.utcnow()
     try:
         with _connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM contacts")
+                cur.execute(
+                    """
+                    UPDATE contacts
+                    SET is_deleted = TRUE, deleted_at = %s, "updatedAt" = %s
+                    WHERE (is_deleted = FALSE OR is_deleted IS NULL)
+                    """,
+                    (now, now),
+                )
                 deleted = cur.rowcount
             conn.commit()
         return {"success": True, "deleted": deleted}

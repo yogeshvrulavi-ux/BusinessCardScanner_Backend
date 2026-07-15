@@ -1,0 +1,146 @@
+"""RBAC authentication middleware — replaces Neon Auth middleware."""
+
+from __future__ import annotations
+
+import logging
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+
+from auth.constants import is_public_path
+from auth.jwt_utils import verify_access_token
+from config.settings import cors_headers_for_origin
+from db.pool import db_cursor
+
+logger = logging.getLogger(__name__)
+
+
+class RBACMiddleware(BaseHTTPMiddleware):
+    """Validates JWT access tokens and attaches full user info to the request."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        path = request.url.path
+        if is_public_path(path):
+            return await call_next(request)
+
+        cors = cors_headers_for_origin(request.headers.get("origin"))
+
+        # ── Extract Bearer token ──────────────────────────────────────────
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing or invalid authorization header. Expected: Bearer <token>"},
+                headers=cors,
+            )
+
+        token = auth_header[7:].strip()
+        payload = verify_access_token(token)
+        if not payload:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or expired access token."},
+                headers=cors,
+            )
+
+        user_id = payload.get("sub")
+        if not user_id:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Token missing user identifier."},
+                headers=cors,
+            )
+
+        # ── Lookup user in database ───────────────────────────────────────
+        try:
+            user_info = await _lookup_user(user_id)
+        except Exception as exc:
+            logger.error("Middleware user lookup failed: %s", exc)
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal server error during authentication."},
+                headers=cors,
+            )
+
+        if not user_info:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "User not found or has been deleted."},
+                headers=cors,
+            )
+
+        if not user_info.get("is_active"):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Account is deactivated. Contact your admin."},
+                headers=cors,
+            )
+
+        # ── Check company active (if applicable) ─────────────────────────
+        company_id = user_info.get("company_id")
+        if company_id:
+            company_status = user_info.get("company_status")
+            if company_status and company_status != "active":
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Your company account is inactive."},
+                    headers=cors,
+                )
+
+        # ── Attach to request state ──────────────────────────────────────
+        request.state.auth_user = user_info
+        return await call_next(request)
+
+
+async def _lookup_user(user_id: str) -> dict | None:
+    """Fetch user + role + company + permissions from the database."""
+    import asyncio
+
+    def _query():
+        with db_cursor(commit=False) as cur:
+            # User + role
+            cur.execute(
+                """
+                SELECT u.id, u.email, u.first_name, u.last_name, u.username,
+                       u.phone, u.is_active, u.is_verified, u.company_id, u.admin_id,
+                       u.profile_image, r.name AS role, c.status AS company_status
+                FROM users u
+                JOIN roles r ON r.id = u.role_id
+                LEFT JOIN companies c ON c.id = u.company_id
+                WHERE u.id = %s AND u.deleted_at IS NULL
+                """,
+                (user_id,),
+            )
+            user = cur.fetchone()
+            if not user:
+                return None
+
+            user = dict(user)
+            role_name = user["role"]
+
+            # Fetch permissions
+            cur.execute(
+                """
+                SELECT p.name
+                FROM role_permissions rp
+                JOIN permissions p ON p.id = rp.permission_id
+                JOIN roles r ON r.id = rp.role_id
+                WHERE r.name = %s
+                """,
+                (role_name,),
+            )
+            perms = [row["name"] for row in cur.fetchall()]
+            user["permissions"] = perms
+
+            # Serialize UUIDs
+            for key in ("id", "company_id", "admin_id"):
+                if user.get(key) is not None:
+                    user[key] = str(user[key])
+
+            return user
+
+    return await asyncio.to_thread(_query)

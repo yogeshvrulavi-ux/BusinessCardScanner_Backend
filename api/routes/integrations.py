@@ -206,8 +206,8 @@ async def test_email_message(request: EmailTestRequest):
         raise HTTPException(
             status_code=503,
             detail=(
-                "Email is not configured. On Render set BREVO_API_KEY and BREVO_SENDER_EMAIL; "
-                "locally set BREVO_SMTP_* or GMAIL_USER + GMAIL_APP_PASSWORD."
+                "Email is not configured. Set GMAIL_USER + GMAIL_APP_PASSWORD "
+                "(or SMTP_USER + SMTP_PASSWORD) in .env."
             ),
         )
 

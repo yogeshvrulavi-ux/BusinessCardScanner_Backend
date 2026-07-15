@@ -1,28 +1,35 @@
-"""Resolve Neon Auth user from FastAPI request state."""
+"""Resolve authenticated user from FastAPI request state (RBAC middleware)."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import Request
 
-from services.auth_service import is_auth_enabled
 
+def get_request_app_user(request: Request) -> dict[str, Any] | None:
+    """Return the authenticated user dict attached by RBACMiddleware.
 
-def get_request_app_user(request: Request) -> dict | None:
+    Returns None if the request is unauthenticated (e.g. auth disabled or public route).
+    """
     user = getattr(request.state, "auth_user", None)
     if not isinstance(user, dict):
         return None
-    user_id = str(user.get("id") or user.get("sub") or "").strip()
+    user_id = str(user.get("id") or "").strip()
     email = str(user.get("email") or "").strip().lower()
     if not user_id and not email:
         return None
-    return {"id": user_id, "email": email}
+    return {
+        "id": user_id,
+        "email": email,
+        "role": user.get("role", ""),
+        "company_id": user.get("company_id"),
+        "admin_id": user.get("admin_id"),
+    }
 
 
 def app_user_filter_kwargs(request: Request) -> dict[str, str | None]:
-    """Keyword args for get_leads() — no filter when auth is disabled."""
-    if not is_auth_enabled():
-        return {"filter_user_email": None, "filter_user_id": None}
-
+    """Keyword args for get_leads() — scopes Zoho queries to user's company."""
     user = get_request_app_user(request)
     if not user:
         return {"filter_user_email": None, "filter_user_id": None}
@@ -32,10 +39,8 @@ def app_user_filter_kwargs(request: Request) -> dict[str, str | None]:
     return {"filter_user_email": email, "filter_user_id": user_id}
 
 
-def get_request_app_user_for_sync(request: Request) -> dict | None:
-    """App user stamped onto Zoho leads on create/sync (when auth is enabled)."""
-    if not is_auth_enabled():
-        return None
+def get_request_app_user_for_sync(request: Request) -> dict[str, Any] | None:
+    """App user stamped onto Zoho leads on create/sync."""
     return get_request_app_user(request)
 
 

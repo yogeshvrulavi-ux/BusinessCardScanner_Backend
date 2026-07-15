@@ -67,7 +67,7 @@ class TestEmailSendWithCc(unittest.TestCase):
     @patch("services.email_service._send_cc_scanned_details_emails", return_value=[{"email": "owner@example.com", "success": True}])
     @patch("services.email_service._deliver_email")
     @patch("services.email_service.is_email_configured", return_value=True)
-    @patch("services.email_service.get_email_provider", return_value="brevo_api")
+    @patch("services.email_service.get_email_provider", return_value="smtp")
     def test_successful_send_with_cc(
         self,
         _provider: MagicMock,
@@ -99,7 +99,7 @@ class TestEmailSendWithCc(unittest.TestCase):
 
     @patch("services.email_service._deliver_email")
     @patch("services.email_service.is_email_configured", return_value=True)
-    @patch("services.email_service.get_email_provider", return_value="brevo_api")
+    @patch("services.email_service.get_email_provider", return_value="smtp")
     def test_email_service_failure(
         self,
         _provider: MagicMock,
@@ -112,13 +112,13 @@ class TestEmailSendWithCc(unittest.TestCase):
             "success": False,
             "recipient_email": "contact@example.com",
             "cc_emails": [],
-            "error": "Brevo API error (502): upstream failure",
+            "error": "SMTP error while sending to contact@example.com: connection refused",
         }
 
         result = send_business_thank_you_email("contact@example.com")
 
         self.assertFalse(result["success"])
-        self.assertIn("Brevo API error", str(result["error"]))
+        self.assertIn("SMTP error", str(result["error"]))
 
 
 if __name__ == "__main__":
