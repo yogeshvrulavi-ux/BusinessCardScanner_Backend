@@ -44,6 +44,19 @@ def _normalize_env(value: str | None) -> str:
     return value.strip().strip('"').strip("'")
 
 
+_PDF_STATIC_PATH = "/static/pdfs/ULACAB_VC_IN-SG_Mobile_Numbers.pdf"
+
+
+def _public_api_base() -> str:
+    from config.urls import get_backend_base_url
+
+    return get_backend_base_url()
+
+
+def _pdf_download_href() -> str:
+    return f"{_public_api_base()}{_PDF_STATIC_PATH}"
+
+
 def _normalize_gmail_app_password(value: str | None) -> str:
     """SMTP app passwords (e.g. Gmail's) are 16 chars; remove spaces from .env (e.g. 'abcd efgh')."""
     return _normalize_env(value).replace(" ", "")
@@ -66,7 +79,7 @@ BUSINESS_WEBSITE = _normalize_env(os.getenv("BUSINESS_WEBSITE")) or ""
 BUSINESS_EMAIL = _normalize_env(os.getenv("BUSINESS_EMAIL")) or SMTP_USER
 EMAIL_TEST_RECIPIENT = _normalize_env(os.getenv("EMAIL_TEST_RECIPIENT"))
 _RENDER_SMTP_HINT = (
-    "Some hosts (e.g. Render's free tier) block outbound SMTP on port 587. "
+    "Some hosts block outbound SMTP on port 587. "
     "Use a host/network that permits SMTP, or an SMTP relay that allows it."
 )
 
@@ -424,6 +437,7 @@ def build_thank_you_email_html(recipient_name: str | None = None) -> str:
         brand_muted=_BRAND_MUTED,
         brand_surface=_BRAND_SURFACE,
         brand_border=_BRAND_BORDER,
+        pdf_download_href=_pdf_download_href(),
     )
     return render_thank_you_email_html(context)
 

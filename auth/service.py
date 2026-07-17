@@ -192,18 +192,21 @@ def login(
     role_name = user["role_name"]
     company_id = str(user["company_id"]) if user.get("company_id") else None
 
-    access_token = create_access_token(user_id, role_name, company_id)
-
-    # Create refresh token first (no session_id yet — avoids circular FK)
-    refresh_token_raw = create_refresh_token(user_id)
+    # Mint session_id first so both access + refresh JWTs carry a valid binding.
+    session_id = str(uuid.uuid4())
+    refresh_token_raw = create_refresh_token(user_id, session_id)
     token_id = token_service.store_refresh_token(
         user_id, refresh_token_raw, device=info["device"], browser=info["browser"], ip=ip,
     )
-
-    # Create session linked to refresh token
-    session_id = session_service.create_session(
-        user_id, token_id, device=info["device"], browser=info["browser"], ip=ip,
+    session_service.create_session(
+        user_id,
+        token_id,
+        session_id=session_id,
+        device=info["device"],
+        browser=info["browser"],
+        ip=ip,
     )
+    access_token = create_access_token(user_id, role_name, company_id, session_id=session_id)
 
     audit_service.log_action(user_id, AUDIT_LOGIN, ip=ip, user_agent=user_agent,
                              new_value={"session_id": session_id, "device": info["device"]})
@@ -319,14 +322,25 @@ def refresh_tokens(
     if not payload:
         raise AuthError(ERR_TOKEN_INVALID, "Invalid or expired refresh token.", 401)
 
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise AuthError(ERR_TOKEN_INVALID, "Refresh token missing session_id.", 401)
+
     # Find stored token
     stored = token_service.find_refresh_token(refresh_token_raw)
     if not stored:
         raise AuthError(ERR_TOKEN_INVALID, "Refresh token not found or revoked.", 401)
 
     user_id = str(stored["user_id"])
-    session_id = payload.get("session_id", str(stored["id"]))
+    if str(payload.get("sub")) != user_id:
+        raise AuthError(ERR_TOKEN_INVALID, "Refresh token subject mismatch.", 401)
+
     info = _client_info(ip, user_agent)
+
+    # Validate session before rotation (idle + absolute timeout)
+    if not session_service.validate_session(session_id, user_id, touch=False):
+        token_service.revoke_refresh_token(str(stored["id"]))
+        raise AuthError(ERR_TOKEN_EXPIRED, "Session expired or invalid. Please log in again.", 401)
 
     # Fetch user for role info
     with db_cursor(commit=False) as cur:
@@ -352,14 +366,14 @@ def refresh_tokens(
     # Revoke old token (rotation)
     token_service.revoke_refresh_token(str(stored["id"]))
 
-    # Issue new tokens
-    new_access = create_access_token(user_id, role_name, company_id)
+    # Issue new tokens (same session_id)
+    new_access = create_access_token(user_id, role_name, company_id, session_id=session_id)
     new_refresh_raw = create_refresh_token(user_id, session_id)
     new_token_id = token_service.store_refresh_token(
         user_id, new_refresh_raw, device=info["device"], browser=info["browser"], ip=ip,
     )
 
-    # Update session
+    # Update session activity + linked refresh token
     session_service.update_activity(session_id)
     with db_cursor() as cur:
         cur.execute("UPDATE sessions SET refresh_token_id = %s WHERE id = %s", (new_token_id, session_id))

@@ -17,7 +17,6 @@ from api.schemas import (
 from auth.constants import ROLE_ADMIN, ROLE_SUPER_ADMIN
 from auth.dependencies import get_current_user, require_role
 from auth.password_utils import hash_password, validate_password_policy
-from auth.service import AuthError, register_user
 from db.pool import db_cursor
 
 router = APIRouter(prefix="/api/users", tags=["Users"])
@@ -84,45 +83,18 @@ def list_users(
 
 @router.post(
     "",
-    summary="Create user",
-    description="Admin creates user under own company. SuperAdmin can assign any company.",
+    summary="Create user (disabled — use invitations)",
+    description="Direct password-based user creation is disabled. Use POST /api/invitations.",
     dependencies=[Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN))],
 )
 def create_user(body: CreateUserRequest, request: Request):
-    user = get_current_user(request)
-    meta = {"ip": request.client.host if request.client else "", "user_agent": request.headers.get("user-agent", "")}
-
-    # Admin can only create users in their own company
-    company_id = body.company_id
-    if user["role"] == ROLE_ADMIN:
-        company_id = user.get("company_id")
-        if not company_id:
-            raise HTTPException(status_code=400, detail="Admin has no company assigned.")
-    elif body.company_id:
-        company_id = body.company_id
-
-    # Admin can only create USER role, not other Admins or SuperAdmins
-    role_name = body.role.upper()
-    if user["role"] == ROLE_ADMIN and role_name not in ("USER",):
-        raise HTTPException(status_code=403, detail="Admins can only create USER role accounts.")
-
-    try:
-        result = register_user(
-            first_name=body.first_name,
-            last_name=body.last_name,
-            email=body.email,
-            username=body.username,
-            password=body.password,
-            role_name=role_name,
-            company_id=company_id,
-            admin_id=user["id"] if user["role"] == ROLE_ADMIN else None,
-            created_by=user["id"],
-            ip=meta["ip"],
-            user_agent=meta["user_agent"],
-        )
-        return {"success": True, "user": result}
-    except AuthError as exc:
-        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "USE_INVITATION",
+            "message": "Direct account creation is disabled. Send an invitation via POST /api/invitations.",
+        },
+    )
 
 
 @router.get(
@@ -250,22 +222,26 @@ def delete_user(user_id: str, request: Request):
     dependencies=[Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN))],
 )
 def update_user_status(user_id: str, body: UserStatusRequest, request: Request):
+    from auth.invitation_service import InvitationError, set_user_active
+
     user = get_current_user(request)
-
-    with db_cursor(commit=True) as cur:
-        cur.execute("SELECT company_id FROM users WHERE id = %s AND deleted_at IS NULL", (user_id,))
-        target = cur.fetchone()
-        if not target:
-            raise HTTPException(status_code=404, detail="User not found.")
-        target = dict(target)
-
-        if user["role"] == ROLE_ADMIN and str(user.get("company_id")) != str(target.get("company_id")):
-            raise HTTPException(status_code=403, detail="Forbidden.")
-
-        cur.execute("UPDATE users SET is_active = %s, updated_at = %s WHERE id = %s",
-                    (body.is_active, datetime.now(timezone.utc), user_id))
-
-    return {"success": True, "is_active": body.is_active}
+    meta = {
+        "ip": request.client.host if request.client else "",
+        "user_agent": request.headers.get("user-agent", ""),
+    }
+    try:
+        return set_user_active(
+            target_user_id=user_id,
+            is_active=body.is_active,
+            actor=user,
+            ip=meta["ip"],
+            user_agent=meta["user_agent"],
+        )
+    except InvitationError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 
 @router.post(

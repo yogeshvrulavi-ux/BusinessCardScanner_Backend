@@ -1,13 +1,11 @@
+"""Password-reset API — PostgreSQL + SMTP (RBAC users table). Neon Auth removed."""
+
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
-from services.password_reset_service import (
-    PasswordResetError,
-    confirm_password_reset_async,
-    send_password_reset_otp,
-)
+from auth.service import AuthError, forgot_password, reset_password
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +23,23 @@ class ConfirmResetRequest(BaseModel):
     confirmPassword: str = Field(min_length=8)
 
 
+def _meta(request: Request) -> dict[str, str]:
+    return {
+        "ip": request.client.host if request.client else "",
+        "user_agent": request.headers.get("user-agent", ""),
+    }
+
+
 @router.post("/send-otp")
-async def send_otp(body: SendOtpRequest):
+async def send_otp(body: SendOtpRequest, request: Request):
+    meta = _meta(request)
     try:
-        return send_password_reset_otp(body.email)
-    except PasswordResetError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return forgot_password(body.email, ip=meta["ip"], user_agent=meta["user_agent"])
+    except AuthError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
     except Exception as exc:
         logger.exception("send-otp failed")
         raise HTTPException(
@@ -40,16 +49,23 @@ async def send_otp(body: SendOtpRequest):
 
 
 @router.post("/confirm")
-async def confirm_reset(body: ConfirmResetRequest):
+async def confirm_reset(body: ConfirmResetRequest, request: Request):
+    if body.password != body.confirmPassword:
+        raise HTTPException(status_code=400, detail="Passwords do not match.")
+    meta = _meta(request)
     try:
-        return await confirm_password_reset_async(
+        return reset_password(
             body.email,
             body.otp,
             body.password,
-            body.confirmPassword,
+            ip=meta["ip"],
+            user_agent=meta["user_agent"],
         )
-    except PasswordResetError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
     except Exception as exc:
         logger.exception("password reset confirm failed")
         raise HTTPException(status_code=500, detail="Could not reset password.") from exc

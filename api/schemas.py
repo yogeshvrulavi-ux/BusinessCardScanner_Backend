@@ -32,36 +32,6 @@ class WhatsAppCardReceivedRequest(BaseModel):
     )
 
 
-class ZohoLeadChannels(BaseModel):
-    whatsapp: bool = False
-    email: bool = False
-
-
-class ZohoLeadSummary(BaseModel):
-    """Lead row returned by GET /api/leads (parsed from Zoho CRM)."""
-
-    id: str | None = None
-    name: str = ""
-    designation: str = ""
-    title: str = ""
-    company: str = ""
-    address: str = ""
-    phone: str = ""
-    email: str = ""
-    website: str = ""
-    eventName: str = Field(
-        default="",
-        description="Parsed from Zoho Features line `Event: …`.",
-    )
-    notes: str = Field(
-        default="",
-        description="Parsed from Zoho Features line `Notes: …`.",
-    )
-    status: str = "synced"
-    lastSync: str = ""
-    channels: ZohoLeadChannels = Field(default_factory=ZohoLeadChannels)
-
-
 class WhatsAppChatReplyRegisterRequest(BaseModel):
     """Register a scanned contact for auto-reply after they message via wa.me QR."""
 
@@ -180,85 +150,6 @@ class SyncOutreachOptions(BaseModel):
 
 class WipeAllDataBody(BaseModel):
     confirm: bool = False
-    include_zoho: bool = True
-
-
-class CreateLeadRequest(BaseModel):
-    fullName: str = Field(..., min_length=1)
-    designation: str = ""
-    company: str = Field(..., min_length=1)
-    address: str = ""
-    phone: str = ""
-    email: str = ""
-    website: str = ""
-    eventName: str = Field(
-        default="",
-        description="Stored in Zoho Features as `Event: {name}`.",
-    )
-    notes: str = Field(
-        default="",
-        description="User-written notes. Stored in Zoho Features as `Notes: {text}`.",
-        max_length=2000,
-    )
-
-
-class SyncFromLocalRequest(BaseModel):
-    """Extracted contact fields from browser OCR — sent by the frontend on save/sync."""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "fullName": "Sandeep Saliganti",
-                    "firstName": "Sandeep",
-                    "lastName": "Saliganti",
-                    "designation": "Developer",
-                    "company": "CardSync Demo",
-                    "phone": "+919884993074",
-                    "email": "saligantisandeepzzz6@gmail.com",
-                    "website": "https://cardsync.ai",
-                    "address": "Hyderabad, India",
-                    "eventName": "Mall Opening",
-                    "notes": "Interested in enterprise plan.",
-                    "connectionMode": "online",
-                    "skipWhatsApp": True,
-                    "skipEmail": False,
-                }
-            ]
-        }
-    )
-
-    fullName: str | None = ""
-    firstName: str | None = ""
-    lastName: str | None = ""
-    name: str | None = ""
-    company: str | None = ""
-    designation: str | None = ""
-    title: str | None = ""
-    phone: str | None = ""
-    secondaryPhone: str | None = ""
-    email: str | None = ""
-    emailAddress: str | None = ""
-    secondaryEmail: str | None = ""
-    secondaryEmailAddress: str | None = ""
-    website: str | None = ""
-    secondaryWebsite: str | None = ""
-    address: str | None = ""
-    secondaryAddress: str | None = ""
-    notes: str | None = Field(
-        default="",
-        description="User-written notes only. Stored in Zoho Features as `Notes: {text}`.",
-        max_length=2000,
-    )
-    eventName: str | None = Field(
-        default="",
-        description="Event name. Stored in Zoho Features as `Event: {name}`.",
-    )
-    eventId: str | None = None
-    zohoLeadId: str | None = None
-    connectionMode: str = "online"
-    skipWhatsApp: bool = False
-    skipEmail: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -346,18 +237,16 @@ class AdminResetPasswordRequest(BaseModel):
 
 
 class CreateCompanyRequest(BaseModel):
+    """Invite an Admin for a new company. Admin sets their own password via the invite link."""
+
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "company_name": "Acme Corp", "company_code": "ACME",
-        "admin_email": "admin@acme.com", "admin_password": "Admin@123",
+        "admin_email": "admin@acme.com",
     }]})
 
     company_name: str = Field(..., min_length=1)
     company_code: str = Field(..., min_length=2)
-    admin_first_name: str = "Admin"
-    admin_last_name: str = ""
     admin_email: EmailStr
-    admin_username: str = Field(..., min_length=3)
-    admin_password: str = Field(..., min_length=8)
     address: str = ""
     phone: str = ""
     email: str = ""

@@ -26,13 +26,12 @@ SKIP_KEYS = frozenset(
         "VITE_CONTACT_STORAGE",
         "VITE_LOCAL_DB_URL",
         "LOCAL_DB_PORT",
-        "NETLIFY_SITE_URL",
         "PRODUCTION_API_URL",
     }
 )
 
 DEFAULTS = {
-    "HOST": "127.0.0.1",
+    "HOST": "0.0.0.0",
     "RELOAD": "true",
 }
 

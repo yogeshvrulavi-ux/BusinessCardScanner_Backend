@@ -14,8 +14,8 @@ def main() -> None:
     os.chdir(BACKEND_ROOT)
     load_env()
 
-    host = os.environ.get("HOST", "127.0.0.1")
-    port = int(os.environ.get("PORT", "5000"))
+    host = os.environ.get("HOST") or "0.0.0.0"
+    port = int(os.environ.get("PORT") or "5000")
     reload = os.environ.get("RELOAD", "true").lower() in {"1", "true", "yes"}
 
     uvicorn.run(

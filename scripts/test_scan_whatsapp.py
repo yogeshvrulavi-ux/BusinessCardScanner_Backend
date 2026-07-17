@@ -9,10 +9,28 @@ import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 CARD = ROOT / "tests" / "fixtures" / "metroaxis-test-card.png"
-API = "http://127.0.0.1:5000"
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT / ".env")
+except ImportError:
+    pass
+
+import os
+
+API = (
+    os.getenv("BACKEND_BASE_URL")
+    or os.getenv("API_BASE_URL")
+    or os.getenv("PUBLIC_API_URL")
+    or ""
+).rstrip("/")
 
 
 def main() -> int:
+    if not API:
+        print("Set BACKEND_BASE_URL in .env", file=sys.stderr)
+        return 1
     if not CARD.is_file():
         print(f"Missing test card: {CARD}", file=sys.stderr)
         return 1

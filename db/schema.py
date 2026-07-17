@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 SCHEMA_STATEMENTS: list[str] = [
+    # ── Extensions (UUID helpers) ──────────────────────────────────────────
+    'CREATE EXTENSION IF NOT EXISTS "pgcrypto";',
     # ── Roles ──────────────────────────────────────────────────────────────
     """
     CREATE TABLE IF NOT EXISTS roles (
@@ -173,38 +175,101 @@ SCHEMA_STATEMENTS: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_sessions_user       ON sessions(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_audit_logs_user     ON audit_logs(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_audit_logs_action   ON audit_logs(action);",
-    # ── Contacts: soft-delete columns (idempotent) ────────────────────────
+    # ── Contacts (was previously created by Prisma db:push; now owned here) ─
+    """
+    CREATE TABLE IF NOT EXISTS contacts (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "fullName"          TEXT NOT NULL DEFAULT '',
+        "firstName"         TEXT NOT NULL DEFAULT '',
+        "lastName"          TEXT NOT NULL DEFAULT '',
+        designation         TEXT NOT NULL DEFAULT '',
+        company             TEXT NOT NULL DEFAULT '',
+        phone               TEXT NOT NULL DEFAULT '',
+        "secondaryPhone"    TEXT NOT NULL DEFAULT '',
+        email               TEXT NOT NULL DEFAULT '',
+        "secondaryEmail"    TEXT NOT NULL DEFAULT '',
+        website             TEXT NOT NULL DEFAULT '',
+        "secondaryWebsite"  TEXT NOT NULL DEFAULT '',
+        address             TEXT NOT NULL DEFAULT '',
+        "secondaryAddress"  TEXT NOT NULL DEFAULT '',
+        "socialLinks"       TEXT NOT NULL DEFAULT '',
+        "gstNumber"         TEXT NOT NULL DEFAULT '',
+        notes               TEXT NOT NULL DEFAULT '',
+        "cardImageBase64"   TEXT,
+        "syncStatus"        TEXT NOT NULL DEFAULT 'local_only',
+        "zohoLeadId"        TEXT,
+        "firebaseId"        TEXT,
+        "createdAt"         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        "updatedAt"         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        is_deleted          BOOLEAN NOT NULL DEFAULT FALSE,
+        deleted_at          TIMESTAMPTZ,
+        created_by_user_id  UUID REFERENCES users(id) ON DELETE SET NULL
+    );
+    """,
+    # ── Contacts: soft-delete columns (idempotent for older DBs) ───────────
     """
     DO $$
     BEGIN
-        IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'contacts' AND column_name = 'is_deleted'
+        IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'contacts'
         ) THEN
-            ALTER TABLE contacts ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE;
-        END IF;
-        IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'contacts' AND column_name = 'deleted_at'
-        ) THEN
-            ALTER TABLE contacts ADD COLUMN deleted_at TIMESTAMPTZ;
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'contacts' AND column_name = 'is_deleted'
+            ) THEN
+                ALTER TABLE contacts ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'contacts' AND column_name = 'deleted_at'
+            ) THEN
+                ALTER TABLE contacts ADD COLUMN deleted_at TIMESTAMPTZ;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'contacts' AND column_name = 'created_by_user_id'
+            ) THEN
+                ALTER TABLE contacts ADD COLUMN created_by_user_id UUID;
+            END IF;
         END IF;
     END $$;
     """,
     "CREATE INDEX IF NOT EXISTS idx_contacts_is_deleted ON contacts(is_deleted);",
-    # ── Contacts: ownership column (idempotent) ──────────────────────────
-    """
-    DO $$
-    BEGIN
-        IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'contacts' AND column_name = 'created_by_user_id'
-        ) THEN
-            ALTER TABLE contacts ADD COLUMN created_by_user_id UUID;
-        END IF;
-    END $$;
-    """,
     "CREATE INDEX IF NOT EXISTS idx_contacts_created_by ON contacts(created_by_user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_contacts_created_at ON contacts(\"createdAt\");",
+    # ── Invitations (secure invite-based onboarding) ───────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS invitations (
+        id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        email              VARCHAR(255) NOT NULL,
+        role               VARCHAR(64)  NOT NULL,
+        company_id         UUID         REFERENCES companies(id) ON DELETE SET NULL,
+        company_name       VARCHAR(255) NOT NULL DEFAULT '',
+        company_code       VARCHAR(64)  NOT NULL DEFAULT '',
+        company_address    TEXT         NOT NULL DEFAULT '',
+        company_phone      VARCHAR(64)  NOT NULL DEFAULT '',
+        company_email      VARCHAR(255) NOT NULL DEFAULT '',
+        company_website    VARCHAR(255) NOT NULL DEFAULT '',
+        invited_by         UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash         VARCHAR(255) NOT NULL UNIQUE,
+        status             VARCHAR(32)  NOT NULL DEFAULT 'pending',
+        expires_at         TIMESTAMPTZ  NOT NULL,
+        used_at            TIMESTAMPTZ,
+        revoked_at         TIMESTAMPTZ,
+        created_user_id    UUID         REFERENCES users(id) ON DELETE SET NULL,
+        created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email);",
+    "CREATE INDEX IF NOT EXISTS idx_invitations_status ON invitations(status);",
+    "CREATE INDEX IF NOT EXISTS idx_invitations_invited_by ON invitations(invited_by);",
+    "CREATE INDEX IF NOT EXISTS idx_invitations_token_hash ON invitations(token_hash);",
+    "ALTER TABLE invitations ADD COLUMN IF NOT EXISTS company_address TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE invitations ADD COLUMN IF NOT EXISTS company_phone VARCHAR(64) NOT NULL DEFAULT '';",
+    "ALTER TABLE invitations ADD COLUMN IF NOT EXISTS company_email VARCHAR(255) NOT NULL DEFAULT '';",
+    "ALTER TABLE invitations ADD COLUMN IF NOT EXISTS company_website VARCHAR(255) NOT NULL DEFAULT '';",
 ]
 
 

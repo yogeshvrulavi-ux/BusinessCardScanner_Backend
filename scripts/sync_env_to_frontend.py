@@ -12,7 +12,7 @@ SOURCES = [
     REPO_ROOT / "main" / ".env.production",
 ]
 FRONTEND_KEYS_PREFIX = ("VITE_",)
-EXTRA_KEYS = ("PRODUCTION_API_URL", "NETLIFY_SITE_URL")
+EXTRA_KEYS = ("PRODUCTION_API_URL",)
 SKIP = frozenset({"VITE_LOCAL_DB_URL"})
 
 

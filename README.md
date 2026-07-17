@@ -17,14 +17,14 @@ backend/
     schemas.py         # Pydantic request/response models
     outreach.py        # WhatsApp/email scheduling helpers
     routes/
-      ocr.py           # (removed — OCR runs in browser)
+      ocr.py           # POST /api/ocr (AWS Textract online OCR)
       contacts.py      # Contact CRUD + Zoho sync
       leads.py         # /api/leads/* (Zoho CRM)
       integrations.py  # WhatsApp/email queues + thank-you
       admin.py         # POST /admin/wipe-all-data
   services/
     zoho_service.py    # Zoho OAuth + leads API
-    ocr_service.py     # (removed — OCR runs in browser)
+    textract_service.py  # AWS Textract OCR (online mode)
     whatsapp_service.py
     email_service.py
     local_db_service.py  # PostgreSQL (psycopg2, same schema as Prisma)
@@ -40,23 +40,25 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
-# Edit .env — Zoho, DATABASE_URL, WhatsApp, email keys
+# Edit .env — FRONTEND_BASE_URL, BACKEND_BASE_URL, DATABASE_URL, JWT, SMTP, AWS, etc.
 python run.py
 ```
 
-- API: http://127.0.0.1:5000  
-- Swagger: http://127.0.0.1:5000/docs  
-- Health: http://127.0.0.1:5000/health  
+URLs are env-driven (`HOST`/`PORT`, `BACKEND_BASE_URL`). After start:
+- API: `{BACKEND_BASE_URL}`
+- Swagger: `{BACKEND_BASE_URL}/docs`
+- Health: `{BACKEND_BASE_URL}/health`
 
 ## Run frontend + backend together
 
 ```powershell
-cd frontend
+cd BusinessCardScanner_Frontend
 npm install
-npm run dev:all
+# Set VITE_API_URL in .env to match BACKEND_BASE_URL
+npm run dev
 ```
 
-This starts Python on :5000 and Vite on :5173 with API proxy.
+Vite proxies `/api` (and related paths) to `VITE_API_URL`.
 
 ## Zoho CRM
 
@@ -103,11 +105,13 @@ Contact CRUD is served by Python (`/api/contacts`) — no separate Node local-db
 | `scripts/test_email_send.py` | Test email delivery |
 | `scripts/test_whatsapp_send.py` | Test WhatsApp delivery |
 
-## Production
+## Production notes
 
-- Card OCR runs in the **browser** (Tesseract.js + `/tessdata/eng.traineddata`).
-- Backend handles Zoho sync, WhatsApp, email (Brevo), and PostgreSQL when configured.
-- Set `FRONTEND_URL` and `ALLOWED_ORIGINS` to your deployed site URL.
+- Card OCR: **AWS Textract** (online, `POST /api/ocr`) + **PaddleOCR** (offline, browser).
+- Backend handles Zoho sync, WhatsApp, email (SMTP), and PostgreSQL when configured.
+- Set `FRONTEND_BASE_URL` to your Amplify (or local Vite) origin — invitation emails use this.
+- Set `BACKEND_BASE_URL`, `ALLOWED_ORIGINS`, and optional `CORS_ORIGIN_REGEX` in `.env`.
+- Do not use Netlify URLs; they are rejected by URL helpers.
 
 ## Removed (do not use)
 

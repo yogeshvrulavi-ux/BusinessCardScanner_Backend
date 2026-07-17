@@ -1,4 +1,4 @@
-"""Disk-backed store for WhatsApp verify / pending state (survives Render sleep)."""
+"""Disk-backed store for WhatsApp verify / pending state (survives process restarts)."""
 from __future__ import annotations
 
 import json

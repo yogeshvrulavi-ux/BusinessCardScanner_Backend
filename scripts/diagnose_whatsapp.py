@@ -1,4 +1,4 @@
-"""Quick WhatsApp + production diagnostics."""
+"""Quick WhatsApp + local API diagnostics."""
 from __future__ import annotations
 
 import json
@@ -91,20 +91,25 @@ def main() -> int:
     except Exception as exc:
         print(f"  ERROR: {exc}")
 
-    print("\n=== PRODUCTION ===")
+    print("\n=== LOCAL API ===")
+    base = os.getenv("BACKEND_BASE_URL") or os.getenv("API_BASE_URL") or os.getenv("PUBLIC_API_URL")
+    if not base:
+        raise SystemExit("Set BACKEND_BASE_URL (or API_BASE_URL) in .env before running diagnose_whatsapp.")
+    base = base.rstrip("/")
     for url in (
-        "https://businessscannercardbackend.onrender.com/health",
-        "https://businessscannercardbackend.onrender.com/webhook?hub.mode=subscribe&hub.verify_token=cardsync_whatsapp_verify_token&hub.challenge=diag123",
+        f"{base}/health",
+        f"{base}/webhook?hub.mode=subscribe&hub.verify_token=cardsync_whatsapp_verify_token&hub.challenge=diag123",
     ):
         try:
             resp = requests.get(url, timeout=45)
-            print(f"  {url.split('.com')[1][:40]} -> {resp.status_code} {resp.text[:80]}")
+            path = url.split(base, 1)[-1][:40]
+            print(f"  {path} -> {resp.status_code} {resp.text[:80]}")
         except Exception as exc:
             print(f"  ERROR: {exc}")
 
-    print("\n=== PRODUCTION CONFIG (public) ===")
+    print("\n=== LOCAL CONFIG (public) ===")
     try:
-        resp = requests.get("https://businessscannercardbackend.onrender.com/config", timeout=45)
+        resp = requests.get(f"{base}/config", timeout=45)
         if resp.ok:
             cfg = resp.json().get("whatsapp", {})
             print(json.dumps(cfg, indent=2))

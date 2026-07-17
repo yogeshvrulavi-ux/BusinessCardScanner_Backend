@@ -4,13 +4,11 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
-from api.auth_context import get_request_app_user, get_request_app_user_for_sync, get_scanner_email_from_request
-
+from api.auth_context import get_scanner_email_from_request
 from api.outreach import (
     email_response,
-    fire_post_zoho_outreach,
     is_online_mode,
-    run_post_zoho_outreach,
+    run_post_save_outreach,
     schedule_outreach_for_contact,
     whatsapp_response,
 )
@@ -18,25 +16,21 @@ from api.schemas import (
     ContactUpdateRequest,
     DuplicateCheckRequest,
     LocalContactBody,
-    SyncOutreachOptions,
     SyncStatusBody,
 )
 from auth.constants import ROLE_ADMIN, ROLE_SUPER_ADMIN
 from auth.dependencies import get_current_user, require_role
+from auth.ownership import require_contact_access
 from services import contact_storage as storage
 from services.contact_service import (
     delete_contact,
     find_duplicate_contacts,
-    get_all_contacts,
     save_contact,
     seed_offline_sample_if_empty,
-    sync_all_pending_to_zoho,
-    sync_contact_to_zoho,
     update_contact,
 )
 from services.contact_storage import ContactStorageError
 from services.local_db_service import LocalDbError
-from services.zoho_service import ZohoError, format_zoho_error_message, soft_delete_lead
 from utils.file_utils import cleanup_temp_file, save_temp_file, validate_file
 
 router = APIRouter(tags=["Contacts"])
@@ -44,12 +38,21 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/contacts/check-duplicates")
-async def check_duplicates(request: DuplicateCheckRequest):
+async def check_duplicates(
+    request: DuplicateCheckRequest,
+    _user: dict = Depends(get_current_user),
+):
     return {"duplicates": find_duplicate_contacts(request.model_dump())}
 
 
 @router.put("/contacts/{contact_id}")
-async def update_existing_contact(contact_id: str, request: ContactUpdateRequest):
+async def update_existing_contact(
+    contact_id: str,
+    request: ContactUpdateRequest,
+    user: dict = Depends(get_current_user),
+):
+    existing = storage.get_contact(contact_id, user=user)
+    require_contact_access(user, existing)
     result = update_contact(contact_id, request.contact)
     if not result.get("success"):
         raise HTTPException(status_code=404, detail=result.get("error", "Contact not found"))
@@ -58,13 +61,17 @@ async def update_existing_contact(contact_id: str, request: ContactUpdateRequest
 
 @router.post("/contacts")
 async def create_contact(
+    request: Request,
     contact: str = Form(...),
     card: Optional[UploadFile] = File(None),
+    user: dict = Depends(get_current_user),
 ):
     try:
         contact_data = json.loads(contact)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid contact JSON") from exc
+
+    contact_data["created_by_user_id"] = user["id"]
 
     temp_path = None
     try:
@@ -102,12 +109,12 @@ async def create_contact(
 
 
 @router.get("/contacts", summary="List all local database contacts")
-async def fetch_contacts():
-    return get_all_contacts()
+async def fetch_contacts(user: dict = Depends(get_current_user)):
+    return storage.list_contacts(user=user)
 
 
 @router.get("/api/storage/config")
-async def storage_config():
+async def storage_config(_user: dict = Depends(get_current_user)):
     from utils.storage_config import get_contact_storage_mode
 
     return {
@@ -117,45 +124,37 @@ async def storage_config():
 
 
 @router.get("/api/contacts", summary="List contacts (UI shape)")
-async def list_contacts_api(
-    user: dict = Depends(get_current_user),
-):
+async def list_contacts_api(user: dict = Depends(get_current_user)):
     return storage.list_contacts(user=user)
 
 
 @router.get("/api/contacts/{contact_id}")
-async def get_contact_api(contact_id: str):
-    contact = storage.get_contact(contact_id)
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    return contact
+async def get_contact_api(contact_id: str, user: dict = Depends(get_current_user)):
+    contact = storage.get_contact(contact_id, user=user)
+    return require_contact_access(user, contact)
 
 
 @router.post("/api/contacts", summary="Save contact")
-async def create_contact_json(body: LocalContactBody, request: Request, user: dict = Depends(get_current_user)):
+async def create_contact_json(
+    body: LocalContactBody,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
     try:
         payload = body.model_dump()
-        # Stamp ownership from authenticated user
-        if user and user.get("id"):
-            payload["created_by_user_id"] = user["id"]
+        payload["created_by_user_id"] = user["id"]
         result = storage.create_contact(payload)
         contact_id = result["id"]
         response: dict[str, Any] = {
             "success": True,
             "id": contact_id,
-            "contact": storage.get_contact(contact_id),
+            "contact": storage.get_contact(contact_id, user=user),
+            "database": "postgresql",
         }
 
         if is_online_mode(body.connectionMode):
-            try:    
-                zoho = sync_contact_to_zoho(
-                    contact_id,
-                    app_user=get_request_app_user_for_sync(request),
-                )
-                response["zohoLeadId"] = zoho.get("zohoLeadId")
-                response["zohoSynced"] = True
-                response["alreadySynced"] = zoho.get("alreadySynced", False)
-                whatsapp_result, email_result = await run_post_zoho_outreach(
+            try:
+                whatsapp_result, email_result = await run_post_save_outreach(
                     contact_id=contact_id,
                     skip_whatsapp=body.skipWhatsApp,
                     skip_email=body.skipEmail,
@@ -164,11 +163,9 @@ async def create_contact_json(body: LocalContactBody, request: Request, user: di
                 )
                 response.update(whatsapp_response(whatsapp_result))
                 response.update(email_response(email_result))
-            except ZohoError as exc:
-                response["zohoError"] = format_zoho_error_message(exc)
             except Exception as exc:
-                logger.error("Zoho sync on save failed for %s: %s", contact_id, exc, exc_info=True)
-                response["zohoError"] = str(exc)
+                logger.error("Outreach after save failed for %s: %s", contact_id, exc, exc_info=True)
+                response["outreachError"] = str(exc)
 
         return response
     except ContactStorageError as exc:
@@ -178,12 +175,20 @@ async def create_contact_json(body: LocalContactBody, request: Request, user: di
 
 
 @router.put("/api/contacts/{contact_id}")
-async def update_contact_json(contact_id: str, body: LocalContactBody):
+async def update_contact_json(
+    contact_id: str,
+    body: LocalContactBody,
+    user: dict = Depends(get_current_user),
+):
     try:
-        result = storage.update_contact(contact_id, body.model_dump())
+        existing = storage.get_contact(contact_id, user=user)
+        require_contact_access(user, existing)
+        payload = body.model_dump()
+        payload.pop("created_by_user_id", None)
+        result = storage.update_contact(contact_id, payload)
         if not result.get("success"):
             raise HTTPException(status_code=404, detail=result.get("error", "Contact not found"))
-        return {"success": True, "id": contact_id, "contact": storage.get_contact(contact_id)}
+        return {"success": True, "id": contact_id, "contact": storage.get_contact(contact_id, user=user)}
     except ContactStorageError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except LocalDbError as exc:
@@ -191,13 +196,19 @@ async def update_contact_json(contact_id: str, body: LocalContactBody):
 
 
 @router.patch("/api/contacts/{contact_id}/sync-status")
-async def patch_contact_sync_status(contact_id: str, body: SyncStatusBody):
+async def patch_contact_sync_status(
+    contact_id: str,
+    body: SyncStatusBody,
+    user: dict = Depends(get_current_user),
+):
+    existing = storage.get_contact(contact_id, user=user)
+    require_contact_access(user, existing)
     storage.patch_sync_status(
         contact_id,
         sync_status=body.syncStatus,
         zoho_lead_id=body.zohoLeadId,
     )
-    contact = storage.get_contact(contact_id)
+    contact = storage.get_contact(contact_id, user=user)
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
     return {"success": True, "contact": contact}
@@ -206,36 +217,13 @@ async def patch_contact_sync_status(contact_id: str, body: SyncStatusBody):
 @router.delete(
     "/api/contacts/{contact_id}",
     summary="Soft-delete a contact (Admin/SuperAdmin only)",
-    description="Marks the contact as deleted. Never permanently removes the record. Requires ADMIN or SUPER_ADMIN role.",
 )
 async def delete_contact_api(
     contact_id: str,
-    request: Request,
-    deleteZoho: bool = False,
-    _user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN)),
+    user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN)),
 ):
-    contact = storage.get_contact(contact_id)
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-
-    if deleteZoho and contact.get("zohoLeadId"):
-        zoho_lead_id = str(contact.get("zohoLeadId"))
-        try:
-            soft_delete_lead(zoho_lead_id, get_request_app_user(request))
-        except ZohoError as exc:
-            if exc.status_code == 404:
-                logger.warning("Zoho lead %s not found when soft-deleting local contact.", zoho_lead_id)
-            elif exc.status_code == 403:
-                raise HTTPException(
-                    status_code=403,
-                    detail="You do not have permission to delete this Zoho lead.",
-                ) from exc
-            else:
-                raise HTTPException(
-                    status_code=exc.status_code,
-                    detail=format_zoho_error_message(exc),
-                ) from exc
-
+    contact = storage.get_contact(contact_id, user=user)
+    require_contact_access(user, contact)
     result = storage.delete_contact(contact_id)
     if not result.get("success"):
         raise HTTPException(status_code=404, detail=result.get("message", "Contact not found"))
@@ -243,75 +231,18 @@ async def delete_contact_api(
 
 
 @router.post("/contacts/seed-sample")
-async def seed_offline_sample():
+async def seed_offline_sample(_user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN))):
     return seed_offline_sample_if_empty()
-
-
-@router.post("/contacts/sync-pending-to-zoho")
-async def sync_pending_contacts_to_zoho():
-    try:
-        result = sync_all_pending_to_zoho()
-        for item in result.get("results", []):
-            contact_id = item.get("id")
-            if not item.get("success") or not contact_id:
-                continue
-            fire_post_zoho_outreach(contact_id=str(contact_id))
-            item["outreach_queued"] = True
-        return result
-    except ZohoError as exc:
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail=format_zoho_error_message(exc),
-        ) from exc
-    except Exception as exc:
-        logger.error("Bulk Zoho sync failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@router.post("/contacts/{contact_id}/sync-to-zoho")
-async def sync_single_contact_to_zoho(
-    contact_id: str,
-    request: Request,
-    body: SyncOutreachOptions | None = None,
-):
-    opts = body or SyncOutreachOptions()
-    try:
-        result = sync_contact_to_zoho(
-            contact_id,
-            app_user=get_request_app_user_for_sync(request),
-        )
-        if not result.get("success"):
-            raise HTTPException(status_code=404, detail=result.get("error", "Contact not found"))
-        whatsapp_result, email_result = await run_post_zoho_outreach(
-            contact_id=contact_id,
-            skip_whatsapp=opts.skipWhatsApp,
-            skip_email=opts.skipEmail,
-            log_context="sync-contact",
-            scanner_email=get_scanner_email_from_request(request),
-        )
-        result.update(whatsapp_response(whatsapp_result))
-        result.update(email_response(email_result))
-        return result
-    except HTTPException:
-        raise
-    except ZohoError as exc:
-        logger.warning("Zoho sync failed for %s: %s", contact_id, format_zoho_error_message(exc))
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail=format_zoho_error_message(exc),
-        ) from exc
-    except Exception as exc:
-        logger.error("Zoho sync failed for %s: %s", contact_id, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.delete(
     "/contacts/{contact_id}",
     summary="Soft-delete a contact (Admin/SuperAdmin only)",
-    description="Marks the contact as deleted. Requires ADMIN or SUPER_ADMIN role.",
 )
 def remove_contact(
     contact_id: str,
-    _user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN)),
+    user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN)),
 ):
+    contact = storage.get_contact(contact_id, user=user)
+    require_contact_access(user, contact)
     return delete_contact(contact_id)

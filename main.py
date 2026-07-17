@@ -108,15 +108,16 @@ app = FastAPI(
         {"name": "Sessions", "description": "Active session and device management"},
         {"name": "Profile", "description": "Self-service profile, password, and email"},
         {"name": "Audit", "description": "Audit log viewer (SuperAdmin + Admin)"},
-        {"name": "Contacts", "description": "Local DB contact CRUD, duplicates, and Zoho sync"},
-        {"name": "Leads", "description": "Zoho CRM leads API"},
+        {"name": "Contacts", "description": "PostgreSQL contact CRUD and duplicates"},
         {"name": "Integrations", "description": "WhatsApp and email queue integrations"},
         {"name": "Webhooks", "description": "Meta WhatsApp webhook verification and events"},
         {"name": "Admin", "description": "Destructive admin operations (wipe data)"},
+        {"name": "Analytics", "description": "Contact insights for Admin/SuperAdmin"},
     ],
 )
 
 allowed_origins = get_allowed_origins()
+cors_regex = CORS_ORIGIN_REGEX or None
 
 # Auth runs inside CORS so 401/403 responses still include Access-Control-Allow-Origin.
 app.add_middleware(RBACMiddleware)
@@ -125,7 +126,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=CORS_ORIGIN_REGEX,
+    allow_origin_regex=cors_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -194,7 +195,7 @@ app.openapi = custom_openapi  # type: ignore[method-assign]
     "/",
     tags=["Health"],
     summary="API root",
-    description="Lightweight index for Render health probes. Use `/health` for full service status.",
+    description="Lightweight API index. Use `/health` for full service status.",
 )
 def root():
     return {
@@ -216,8 +217,8 @@ def root_head():
     tags=["Health"],
     summary="Health check",
     description=(
-        "Reports Zoho, email (SMTP), WhatsApp, storage, and webhook configuration. "
-        "OCR runs in the browser — not on this API."
+        "Reports PostgreSQL storage, email (SMTP), WhatsApp, and OCR status. "
+        "OCR: Textract (online, POST /api/ocr) + PaddleOCR (offline, browser)."
     ),
 )
 def health_check():
@@ -234,27 +235,18 @@ def health_check():
     from api.routes.webhook import get_webhook_verify_token
     from services.whatsapp_service import get_whatsapp_config_summary, is_whatsapp_configured
     from services.whatsapp_webhook_setup import get_waba_subscription_status
-    from services.zoho_service import refresh_access_token
-
-    zoho_connected = False
-    zoho_error = None
-    try:
-        token_data = refresh_access_token()
-        zoho_connected = bool(token_data.get("access_token"))
-    except Exception as exc:
-        zoho_error = str(exc)
 
     provider = get_email_provider()
-    payload = {
-        "ok": True,
+    db_status = check_storage()
+    return {
+        "ok": bool(db_status.get("ok")),
         "service": "cardsync-backend",
         "storage": storage_label(),
-        "database": check_storage(),
+        "database": db_status,
         "ocr": {
-            "location": "browser",
-            "note": "Card OCR runs on the device (Tesseract.js). Backend receives extracted fields on save/sync.",
+            "location": "backend+browser",
+            "note": "Textract (online) + PaddleOCR (offline). POST /api/ocr for online extraction.",
         },
-        "zoho": {"connected": zoho_connected},
         "email": {
             "configured": is_email_configured(),
             "provider": provider,
@@ -273,6 +265,3 @@ def health_check():
             ),
         },
     }
-    if zoho_error:
-        payload["zoho"]["error"] = zoho_error
-    return payload

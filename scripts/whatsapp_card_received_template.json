@@ -2,7 +2,7 @@
   "name": "card_final_ula",
   "category": "UTILITY",
   "language": "en",
-  "header_document_url": "https://businessscannercardbackend.onrender.com/static/pdfs/ULACAB_VC_IN-SG_Mobile_Numbers.pdf",
+  "header_document_url": "__BACKEND_BASE_URL__/static/pdfs/ULACAB_VC_IN-SG_Mobile_Numbers.pdf",
   "components": [
     {
       "type": "HEADER",

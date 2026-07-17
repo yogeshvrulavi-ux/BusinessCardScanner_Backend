@@ -1,4 +1,4 @@
-"""One-off: POST signed webhook to production (run locally)."""
+"""One-off: POST signed webhook to local API (run with backend up)."""
 import hashlib
 import hmac
 import json
@@ -17,11 +17,20 @@ except ImportError:
     pass
 
 SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip().strip('"').strip("'")
-BASE = os.getenv("TEST_WEBHOOK_URL", "https://businessscannercardbackend.onrender.com/webhook")
+_backend = (
+    os.getenv("BACKEND_BASE_URL")
+    or os.getenv("API_BASE_URL")
+    or os.getenv("PUBLIC_API_URL")
+    or ""
+).rstrip("/")
+BASE = os.getenv("TEST_WEBHOOK_URL") or (f"{_backend}/webhook" if _backend else "")
 PHONE = os.getenv("TEST_PHONE", "916309248193")
 
 
 def main() -> int:
+    if not BASE:
+        print("Set TEST_WEBHOOK_URL or BACKEND_BASE_URL in .env", file=sys.stderr)
+        return 1
     if not SECRET:
         print("Set WHATSAPP_APP_SECRET in env", file=sys.stderr)
         return 1

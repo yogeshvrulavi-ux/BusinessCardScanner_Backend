@@ -498,6 +498,18 @@ def _extract_variable_positions(template_def: dict[str, Any]) -> list[int]:
     return sorted(positions)
 
 
+def _resolve_public_asset_url(url: str | None) -> str | None:
+    """Expand __BACKEND_BASE_URL__ placeholders using BACKEND_BASE_URL from env."""
+    if not url:
+        return None
+    raw = str(url).strip()
+    if "__BACKEND_BASE_URL__" not in raw:
+        return raw
+    from config.urls import get_backend_base_url
+
+    return raw.replace("__BACKEND_BASE_URL__", get_backend_base_url())
+
+
 def _build_header_component(template_def: dict[str, Any]) -> dict[str, Any] | None:
     """Build a Meta template header component from the JSON definition."""
     for comp in template_def.get("components", []):
@@ -505,7 +517,9 @@ def _build_header_component(template_def: dict[str, Any]) -> dict[str, Any] | No
             continue
         fmt = (comp.get("format") or "").upper()
         if fmt == "DOCUMENT":
-            doc_url = template_def.get("header_document_url") or comp.get("document_url")
+            doc_url = _resolve_public_asset_url(
+                template_def.get("header_document_url") or comp.get("document_url")
+            )
             if not doc_url:
                 return None
             filename = str(doc_url).split("/")[-1] or "document.pdf"

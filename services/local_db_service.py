@@ -3,13 +3,16 @@ import logging
 import mimetypes
 import os
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, Generator
 
-import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from db.pool import get_connection, release_connection
+
 logger = logging.getLogger(__name__)
+
 
 def _postgres_url() -> str:
     raw = os.getenv("DATABASE_URL", "").strip()
@@ -41,14 +44,26 @@ def check_database() -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _connect():
-    url = _postgres_url()
-    if not url:
+@contextmanager
+def _connect() -> Generator:
+    """Acquire a pooled PostgreSQL connection (shared with auth module)."""
+    try:
+        conn = get_connection()
+    except RuntimeError as exc:
         raise LocalDbError(
-            "PostgreSQL is not configured. Set DATABASE_URL in .env and run npm run db:push once.",
+            "PostgreSQL pool is not initialized. Ensure DATABASE_URL is set and the app has started.",
             status_code=503,
-        )
-    return psycopg2.connect(url)
+        ) from exc
+    try:
+        yield conn
+        if not conn.closed:
+            conn.commit()
+    except Exception:
+        if not conn.closed:
+            conn.rollback()
+        raise
+    finally:
+        release_connection(conn)
 
 
 WHATSAPP_SENT_MARKER = "[whatsapp:sent]"
@@ -264,18 +279,43 @@ def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         return []
 
 
-def get_contact(contact_id: str) -> dict[str, Any] | None:
+def get_contact(contact_id: str, user: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Fetch a single contact. When *user* is provided, apply RBAC ownership filter."""
     try:
         with _connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT * FROM contacts WHERE id = %s AND (is_deleted = FALSE OR is_deleted IS NULL)",
-                    (contact_id,),
-                )
+                query = """
+                    SELECT c.*,
+                           COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
+                           COALESCE(comp.company_name, '') AS admin_name,
+                           u.company_id AS owner_company_id
+                    FROM contacts c
+                    LEFT JOIN users u ON c.created_by_user_id = u.id
+                    LEFT JOIN companies comp ON u.company_id = comp.id
+                    WHERE c.id = %s AND (c.is_deleted = FALSE OR c.is_deleted IS NULL)
+                """
+                params: list[Any] = [contact_id]
+
+                if user:
+                    role = user.get("role", "")
+                    company_id = user.get("company_id")
+                    user_id = user.get("id")
+                    if role == "USER" and user_id:
+                        query += " AND c.created_by_user_id = %s"
+                        params.append(user_id)
+                    elif role == "ADMIN" and company_id:
+                        query += " AND u.company_id = %s"
+                        params.append(company_id)
+                    # SUPER_ADMIN: no extra filter
+
+                cur.execute(query, params)
                 row = cur.fetchone()
         if not row:
             return None
-        return _row_to_contact(dict(row))
+        contact = _row_to_contact(dict(row))
+        if row.get("owner_company_id") is not None:
+            contact["owner_company_id"] = str(row["owner_company_id"])
+        return contact
     except LocalDbError:
         raise
     except Exception as exc:
@@ -424,29 +464,6 @@ def soft_delete_contact(contact_id: str) -> dict[str, Any]:
 
 # Legacy alias — some callers still import delete_contact
 delete_contact = soft_delete_contact
-
-
-def delete_contact_by_zoho_lead_id(zoho_lead_id: str) -> dict[str, Any]:
-    """Soft-delete contacts matching a Zoho lead ID."""
-    now = datetime.utcnow()
-    try:
-        with _connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE contacts
-                    SET is_deleted = TRUE, deleted_at = %s, "updatedAt" = %s
-                    WHERE "zohoLeadId" = %s AND (is_deleted = FALSE OR is_deleted IS NULL)
-                    """,
-                    (now, now, zoho_lead_id),
-                )
-                deleted = cur.rowcount
-            conn.commit()
-        return {"success": True, "deleted": deleted}
-    except LocalDbError:
-        raise
-    except Exception as exc:
-        raise LocalDbError(str(exc)) from exc
 
 
 def patch_sync_status(

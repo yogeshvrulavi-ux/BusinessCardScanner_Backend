@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Wipe Firebase/PostgreSQL contacts and optionally all Zoho CRM leads.
+"""Wipe PostgreSQL contacts via the running API.
 
-Requires the Python API running (default http://127.0.0.1:5000).
+Requires the Python API running (BACKEND_BASE_URL from .env) and a valid JWT.
 
 Usage:
   python scripts/wipe_all_data.py
-  SKIP_ZOHO=1 python scripts/wipe_all_data.py
+  ACCESS_TOKEN=... python scripts/wipe_all_data.py
 """
 from __future__ import annotations
 
@@ -23,18 +23,27 @@ from utils.env_loader import load_env  # noqa: E402
 
 load_env()
 
-DEFAULT_API = "http://127.0.0.1:5000"
-
-
 def main() -> int:
-    api_base = os.getenv("VITE_API_URL", DEFAULT_API).rstrip("/")
-    include_zoho = os.getenv("SKIP_ZOHO", "").strip() != "1"
+    api_base = (
+        os.getenv("BACKEND_BASE_URL")
+        or os.getenv("API_BASE_URL")
+        or os.getenv("VITE_API_URL")
+        or ""
+    ).rstrip("/")
+    if not api_base:
+        print("Set BACKEND_BASE_URL (or API_BASE_URL) in .env", file=sys.stderr)
+        return 1
+    token = os.getenv("ACCESS_TOKEN", "").strip()
 
-    payload = json.dumps({"confirm": True, "include_zoho": include_zoho}).encode("utf-8")
+    payload = json.dumps({"confirm": True}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
     req = urllib.request.Request(
         f"{api_base}/admin/wipe-all-data",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
 
@@ -52,12 +61,6 @@ def main() -> int:
         return 1
 
     print(json.dumps(body, indent=2))
-    contacts = body.get("contacts") or {}
-    if contacts.get("error"):
-        print("Contacts:", contacts["error"], file=sys.stderr)
-    elif "deleted" in contacts:
-        print(f"Contacts deleted: {contacts.get('deleted', 0)}")
-
     print(
         "\nDone. Use Settings → Delete all data in the app to clear the browser queue/cache.",
     )

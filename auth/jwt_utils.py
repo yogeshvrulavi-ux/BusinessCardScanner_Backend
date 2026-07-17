@@ -26,16 +26,21 @@ def create_access_token(
     role: str,
     company_id: str | None = None,
     *,
+    session_id: str,
     extra_claims: dict[str, Any] | None = None,
     expires_minutes: int | None = None,
 ) -> str:
-    """Create a short-lived JWT access token."""
+    """Create a short-lived JWT access token. session_id is required for session binding."""
+    if not session_id:
+        raise ValueError("session_id is required on access tokens.")
+
     now = datetime.now(timezone.utc)
     exp = now + timedelta(minutes=expires_minutes or JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
 
     payload: dict[str, Any] = {
         "sub": user_id,
         "role": role,
+        "session_id": session_id,
         "iat": now,
         "exp": exp,
         "iss": JWT_ISSUER,
@@ -53,16 +58,20 @@ def create_access_token(
 
 def create_refresh_token(
     user_id: str,
-    session_id: str | None = None,
+    session_id: str,
     *,
     expires_days: int | None = None,
 ) -> str:
-    """Create a long-lived JWT refresh token (stored hashed in the DB)."""
+    """Create a long-lived JWT refresh token. session_id is always required."""
+    if not session_id:
+        raise ValueError("session_id is required on refresh tokens.")
+
     now = datetime.now(timezone.utc)
     exp = now + timedelta(days=expires_days or JWT_REFRESH_TOKEN_EXPIRE_DAYS)
 
     payload: dict[str, Any] = {
         "sub": user_id,
+        "session_id": session_id,
         "iat": now,
         "exp": exp,
         "iss": JWT_ISSUER,
@@ -70,8 +79,6 @@ def create_refresh_token(
         "jti": str(uuid.uuid4()),
         "type": "refresh",
     }
-    if session_id:
-        payload["session_id"] = session_id
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -10,6 +11,7 @@ from starlette.responses import JSONResponse, Response
 
 from auth.constants import is_public_path
 from auth.jwt_utils import verify_access_token
+from auth.session_service import validate_session
 from config.settings import cors_headers_for_origin
 from db.pool import db_cursor
 
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class RBACMiddleware(BaseHTTPMiddleware):
-    """Validates JWT access tokens and attaches full user info to the request."""
+    """Validates JWT access tokens, sessions, and attaches full user info to the request."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
         if request.method == "OPTIONS":
@@ -52,6 +54,34 @@ class RBACMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Token missing user identifier."},
+                headers=cors,
+            )
+
+        session_id = payload.get("session_id")
+        if not session_id:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Access token missing session_id. Please log in again."},
+                headers=cors,
+            )
+
+        # ── Validate session (idle + absolute timeout) ────────────────────
+        try:
+            session_ok = await asyncio.to_thread(
+                lambda: validate_session(session_id, str(user_id), touch=True)
+            )
+        except Exception as exc:
+            logger.error("Middleware session validation failed: %s", exc)
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal server error during session validation."},
+                headers=cors,
+            )
+
+        if not session_ok:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Session expired or invalid. Please log in again."},
                 headers=cors,
             )
 
@@ -92,13 +122,13 @@ class RBACMiddleware(BaseHTTPMiddleware):
                 )
 
         # ── Attach to request state ──────────────────────────────────────
+        user_info["session_id"] = str(session_id)
         request.state.auth_user = user_info
         return await call_next(request)
 
 
 async def _lookup_user(user_id: str) -> dict | None:
     """Fetch user + role + company + permissions from the database."""
-    import asyncio
 
     def _query():
         with db_cursor(commit=False) as cur:

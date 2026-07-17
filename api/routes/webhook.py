@@ -129,7 +129,7 @@ async def receive_webhook(
     if APP_SECRET and not _verify_meta_signature(raw_body, signature):
         logger.error(
             "WhatsApp webhook rejected: invalid X-Hub-Signature-256. "
-            "Set WHATSAPP_APP_SECRET on Render to the App Secret from "
+            "Set WHATSAPP_APP_SECRET to the App Secret from "
             "Meta Developers → your app → Settings → Basic (no quotes)."
         )
         return PlainTextResponse(content="Invalid signature", status_code=403)
@@ -141,7 +141,7 @@ async def receive_webhook(
 
     if payload.get("object") == "whatsapp_business_account":
         _log_whatsapp_events(payload)
-        # Process before returning 200 so verify state updates on Render (no lost background tasks).
+        # Process before returning 200 so verify state updates reliably (no lost background tasks).
         await _process_inbound_messages(payload)
 
     return Response(status_code=200)

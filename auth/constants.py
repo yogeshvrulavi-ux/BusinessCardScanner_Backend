@@ -16,8 +16,19 @@ ALL_ROLES = (ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_USER)
 # ---------------------------------------------------------------------------
 # JWT settings
 # ---------------------------------------------------------------------------
+def _require_jwt_secret() -> str:
+    """Load JWT_SECRET_KEY from the environment. Never fall back to a default."""
+    value = (os.getenv("JWT_SECRET_KEY") or "").strip()
+    if not value or value == "change-me-in-production":
+        raise RuntimeError(
+            "JWT_SECRET_KEY is missing or insecure. "
+            "Set a strong secret in BusinessCardScanner_Backend/.env and restart."
+        )
+    return value
+
+
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-production")
+JWT_SECRET_KEY = _require_jwt_secret()
 JWT_ISSUER = "cardsync"
 JWT_AUDIENCE = "cardsync-api"
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
@@ -44,10 +55,6 @@ PASSWORD_RESET_OTP_EXPIRE_MINUTES = 10
 # Email verification
 # ---------------------------------------------------------------------------
 EMAIL_VERIFY_TOKEN_EXPIRE_HOURS = 24
-
-# ---------------------------------------------------------------------------
-# Public paths — bypass authentication entirely
-# ---------------------------------------------------------------------------
 PUBLIC_PATHS: set[str] = {
     "/",
     "/health",
@@ -63,6 +70,8 @@ PUBLIC_PATHS: set[str] = {
     "/api/auth/verify-email",
     "/api/auth/password-reset/send-otp",
     "/api/auth/password-reset/confirm",
+    "/api/invitations/validate",
+    "/api/invitations/accept",
 }
 
 # Prefixes that are also public (e.g. /static/anything)
@@ -99,6 +108,18 @@ AUDIT_COMPANY_DELETED = "company_deleted"
 AUDIT_ROLE_CHANGED = "role_changed"
 AUDIT_TOKEN_REFRESHED = "token_refreshed"
 AUDIT_EMAIL_CHANGE_REQUESTED = "email_change_requested"
+AUDIT_INVITE_SENT = "invite_sent"
+AUDIT_INVITE_RESENT = "invite_resent"
+AUDIT_INVITE_REVOKED = "invite_revoked"
+AUDIT_INVITE_ACCEPTED = "invite_accepted"
+AUDIT_ACCOUNT_DISABLED = "account_disabled"
+AUDIT_ACCOUNT_ENABLED = "account_enabled"
+
+# ---------------------------------------------------------------------------
+# Invitation settings
+# ---------------------------------------------------------------------------
+INVITATION_EXPIRE_HOURS = int(os.getenv("INVITATION_EXPIRE_HOURS", "48"))
+INVITATION_RATE_LIMIT_PER_HOUR = int(os.getenv("INVITATION_RATE_LIMIT_PER_HOUR", "20"))
 
 # ---------------------------------------------------------------------------
 # Error codes (returned in API error responses)

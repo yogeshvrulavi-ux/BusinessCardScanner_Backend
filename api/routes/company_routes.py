@@ -1,18 +1,20 @@
 """Company management routes — CRUD for companies (SuperAdmin only, with /me for any user)."""
 
-from __future__ import annotations
-
 import logging
-import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from api.schemas import CreateCompanyRequest, UpdateCompanyRequest
-from auth.constants import AUDIT_COMPANY_CREATED, AUDIT_COMPANY_DELETED, AUDIT_COMPANY_UPDATED, ROLE_ADMIN, ROLE_SUPER_ADMIN
+from auth.constants import (
+    AUDIT_COMPANY_CREATED,
+    AUDIT_COMPANY_DELETED,
+    AUDIT_COMPANY_UPDATED,
+    ROLE_ADMIN,
+    ROLE_SUPER_ADMIN,
+)
 from auth.dependencies import get_current_user, require_role
-from auth.password_utils import hash_password
-from auth.service import AuthError, register_user
+from auth.invitation_service import InvitationError, create_invitation
 from auth import audit_service
 from db.pool import db_cursor
 
@@ -56,79 +58,68 @@ def list_companies(page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=2
 
 @router.post(
     "",
-    summary="Create company + admin user",
-    description="Creates a new company and its Admin user in a single transaction.",
+    summary="Invite Admin for a new company",
+    description=(
+        "Stores company details on the invitation. The Admin registers via the invite link "
+        "and sets their own password. Company row is created when the invitation is accepted."
+    ),
     dependencies=[Depends(require_role(ROLE_SUPER_ADMIN))],
 )
 def create_company(body: CreateCompanyRequest, request: Request):
     user = get_current_user(request)
-    meta = {"ip": request.client.host if request.client else "", "user_agent": request.headers.get("user-agent", "")}
+    meta = {
+        "ip": request.client.host if request.client else "",
+        "user_agent": request.headers.get("user-agent", ""),
+    }
 
-    with db_cursor(commit=True) as cur:
-        # Check company_code uniqueness
+    with db_cursor(commit=False) as cur:
         cur.execute("SELECT 1 FROM companies WHERE company_code = %s", (body.company_code,))
         if cur.fetchone():
             raise HTTPException(status_code=409, detail="Company code already exists.")
 
-        company_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
-
-        # Get ADMIN role id
-        cur.execute("SELECT id FROM roles WHERE name = 'ADMIN'")
-        admin_role = cur.fetchone()
-        if not admin_role:
-            raise HTTPException(status_code=500, detail="ADMIN role not seeded.")
-        admin_role_id = admin_role["id"]
-
-        # Create admin user first
-        cur.execute("SELECT 1 FROM users WHERE LOWER(email) = %s AND deleted_at IS NULL", (body.admin_email.lower(),))
-        if cur.fetchone():
-            raise HTTPException(status_code=409, detail="Admin email already exists.")
-        cur.execute("SELECT 1 FROM users WHERE LOWER(username) = %s AND deleted_at IS NULL", (body.admin_username.lower(),))
-        if cur.fetchone():
-            raise HTTPException(status_code=409, detail="Admin username already exists.")
-
-        admin_id = str(uuid.uuid4())
-        # Create admin user WITHOUT company_id first (FK: company doesn't exist yet)
-        cur.execute(
-            """
-            INSERT INTO users (
-                id, first_name, last_name, email, username, password_hash,
-                role_id, is_active, is_verified, created_by, created_at, updated_at, last_password_change
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (admin_id, body.admin_first_name, body.admin_last_name,
-             body.admin_email.lower(), body.admin_username.lower(),
-             hash_password(body.admin_password),
-             admin_role_id,
-             True, True, user["id"], now, now, now),
+    try:
+        invitation = create_invitation(
+            email=str(body.admin_email),
+            role="ADMIN",
+            invited_by=user,
+            company_id=None,
+            company_name=body.company_name,
+            company_code=body.company_code,
+            company_address=body.address,
+            company_phone=body.phone,
+            company_email=body.email,
+            company_website=body.website,
+            ip=meta["ip"],
+            user_agent=meta["user_agent"],
         )
+    except InvitationError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
-        # Create company (references admin_id)
-        cur.execute(
-            """
-            INSERT INTO companies (
-                id, company_name, company_code, admin_id, address, phone, email, website,
-                status, created_at, updated_at
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'active',%s,%s)
-            """,
-            (company_id, body.company_name, body.company_code, admin_id,
-             body.address, body.phone, body.email, body.website, now, now),
-        )
-
-        # Now link admin user → company
-        cur.execute(
-            "UPDATE users SET company_id = %s WHERE id = %s",
-            (company_id, admin_id),
-        )
-
-    audit_service.log_action(user["id"], AUDIT_COMPANY_CREATED, ip=meta["ip"], user_agent=meta["user_agent"],
-                             new_value={"company_id": company_id, "company_name": body.company_name})
+    audit_service.log_action(
+        user["id"],
+        AUDIT_COMPANY_CREATED,
+        ip=meta["ip"],
+        user_agent=meta["user_agent"],
+        new_value={
+            "company_name": body.company_name,
+            "company_code": body.company_code,
+            "invitation_id": invitation.get("id"),
+            "admin_email": str(body.admin_email),
+        },
+    )
 
     return {
         "success": True,
-        "company": {"id": company_id, "company_name": body.company_name, "company_code": body.company_code},
-        "admin": {"id": admin_id, "email": body.admin_email},
+        "detail": "Admin invitation sent. Company will be created when the Admin registers.",
+        "invitation": invitation,
+        "company": {
+            "company_name": body.company_name,
+            "company_code": body.company_code,
+            "pending": True,
+        },
     }
 
 

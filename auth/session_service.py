@@ -17,13 +17,17 @@ def create_session(
     user_id: str,
     refresh_token_id: str,
     *,
+    session_id: str | None = None,
     device: str = "",
     browser: str = "",
     ip: str = "",
     expires_hours: int | None = None,
 ) -> str:
-    """Insert a new session row. Returns the session id (UUID)."""
-    session_id = str(uuid.uuid4())
+    """Insert a new session row. Returns the session id (UUID).
+
+    Pass an explicit session_id when the refresh JWT was already minted with that id.
+    """
+    sid = session_id or str(uuid.uuid4())
     expires_at = datetime.now(timezone.utc) + timedelta(
         hours=expires_hours or SESSION_ABSOLUTE_TIMEOUT_HOURS
     )
@@ -34,9 +38,9 @@ def create_session(
             INSERT INTO sessions (id, user_id, refresh_token_id, device, browser, ip, expires_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (session_id, user_id, refresh_token_id, device, browser, ip, expires_at),
+            (sid, user_id, refresh_token_id, device, browser, ip, expires_at),
         )
-    return session_id
+    return sid
 
 
 def update_activity(session_id: str) -> None:
@@ -46,6 +50,56 @@ def update_activity(session_id: str) -> None:
             "UPDATE sessions SET last_activity = %s WHERE id = %s AND status = 'active'",
             (datetime.now(timezone.utc), session_id),
         )
+
+
+def validate_session(session_id: str, user_id: str, *, touch: bool = True) -> bool:
+    """Return True when the session is active, owned by user_id, and within timeouts.
+
+    Ends the session when idle or absolute timeout is exceeded.
+    """
+    if not session_id or not user_id:
+        return False
+
+    now = datetime.now(timezone.utc)
+    with db_cursor(commit=False) as cur:
+        cur.execute(
+            """
+            SELECT id, user_id, status, last_activity, expires_at
+            FROM sessions
+            WHERE id = %s
+            """,
+            (session_id,),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return False
+
+    row = dict(row)
+    if str(row.get("user_id")) != str(user_id):
+        return False
+    if row.get("status") != "active":
+        return False
+
+    expires_at = row.get("expires_at")
+    if expires_at is not None:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now:
+            _end_session(session_id)
+            return False
+
+    last_activity = row.get("last_activity")
+    if last_activity is not None:
+        if last_activity.tzinfo is None:
+            last_activity = last_activity.replace(tzinfo=timezone.utc)
+        if (now - last_activity) > timedelta(minutes=SESSION_TIMEOUT_MINUTES):
+            _end_session(session_id)
+            return False
+
+    if touch:
+        update_activity(session_id)
+    return True
 
 
 def get_active_sessions(user_id: str) -> list[dict[str, Any]]:

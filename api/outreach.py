@@ -94,7 +94,7 @@ async def schedule_outreach_for_contact(
     contact: dict[str, Any],
     *,
     online_mode: bool = True,
-    on_zoho_sync: bool = False,
+    on_save: bool = False,
     contact_id: str | None = None,
     skip_whatsapp: bool = False,
     skip_email: bool = False,
@@ -103,7 +103,7 @@ async def schedule_outreach_for_contact(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     outreach_kwargs = {
         "online_mode": online_mode,
-        "on_zoho_sync": on_zoho_sync,
+        "on_zoho_sync": on_save,  # email/whatsapp services still accept this flag name
         "contact_id": contact_id,
     }
     whatsapp_result: dict[str, Any] = {"sent": False, "error": None}
@@ -178,16 +178,16 @@ def payload_to_outreach_contact(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def run_post_zoho_outreach(
+async def run_post_save_outreach(
     *,
     contact_id: str | None = None,
     contact: dict[str, Any] | None = None,
     skip_whatsapp: bool = False,
     skip_email: bool = False,
-    log_context: str = "post-zoho-outreach",
+    log_context: str = "post-save-outreach",
     scanner_email: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Run thank-you WhatsApp/email after Zoho sync; returns channel result dicts."""
+    """Run thank-you WhatsApp/email after a contact is saved to PostgreSQL."""
     skipped_whatsapp: dict[str, Any] = {
         "sent": False,
         "error": "Skipped by request (skipWhatsApp=true).",
@@ -205,7 +205,7 @@ async def run_post_zoho_outreach(
                 return skipped_whatsapp, skipped_email
             return await schedule_outreach_for_contact(
                 stored,
-                on_zoho_sync=True,
+                on_save=True,
                 contact_id=contact_id,
                 skip_whatsapp=skip_whatsapp,
                 skip_email=skip_email,
@@ -216,7 +216,7 @@ async def run_post_zoho_outreach(
         if contact:
             return await schedule_outreach_for_contact(
                 contact,
-                on_zoho_sync=True,
+                on_save=True,
                 contact_id=None,
                 skip_whatsapp=skip_whatsapp,
                 skip_email=skip_email,
@@ -231,52 +231,20 @@ async def run_post_zoho_outreach(
     return skipped_whatsapp, skipped_email
 
 
-async def _post_zoho_outreach(
-    contact_id: str,
-    *,
-    skip_whatsapp: bool = False,
-    skip_email: bool = False,
-) -> None:
-    await run_post_zoho_outreach(
-        contact_id=contact_id,
-        skip_whatsapp=skip_whatsapp,
-        skip_email=skip_email,
-    )
-
-
-async def _post_outreach_for_contact_data(
-    contact: dict[str, Any],
-    *,
-    skip_whatsapp: bool = False,
-    skip_email: bool = False,
-) -> None:
-    await run_post_zoho_outreach(
-        contact=contact,
-        skip_whatsapp=skip_whatsapp,
-        skip_email=skip_email,
-    )
-
-
-def fire_post_zoho_outreach(
+def fire_post_save_outreach(
     *,
     contact_id: str | None = None,
     contact: dict[str, Any] | None = None,
     skip_whatsapp: bool = False,
     skip_email: bool = False,
 ) -> None:
-    if contact_id:
-        asyncio.create_task(
-            _post_zoho_outreach(
-                contact_id,
-                skip_whatsapp=skip_whatsapp,
-                skip_email=skip_email,
-            )
+    """Fire-and-forget outreach after contact save."""
+    async def _run() -> None:
+        await run_post_save_outreach(
+            contact_id=contact_id,
+            contact=contact,
+            skip_whatsapp=skip_whatsapp,
+            skip_email=skip_email,
         )
-    elif contact:
-        asyncio.create_task(
-            _post_outreach_for_contact_data(
-                contact,
-                skip_whatsapp=skip_whatsapp,
-                skip_email=skip_email,
-            )
-        )
+
+    asyncio.create_task(_run())
