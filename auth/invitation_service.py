@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import secrets
 import time
@@ -233,6 +234,16 @@ def create_invitation(
 
     result = _serialize_invite(row)
     result["detail"] = "Invitation sent."
+    # Local/dev only: allow completing POST /api/invitations/accept without reading email.
+    # Production never returns the raw token (email link only).
+    if (os.getenv("APP_ENV") or "development").strip().lower() == "development":
+        result["invite_token"] = raw_token
+        try:
+            from config.urls import get_frontend_base_url
+
+            result["invite_url"] = f"{get_frontend_base_url()}/register?token={raw_token}"
+        except RuntimeError:
+            result["invite_url"] = f"/register?token={raw_token}"
     return result
 
 
@@ -334,7 +345,10 @@ def resend_invitation(
         user_agent=user_agent,
         new_value={"invitation_id": invitation_id, "email": row["email"]},
     )
-    return {"success": True, "detail": "Invitation resent."}
+    out: dict[str, Any] = {"success": True, "detail": "Invitation resent."}
+    if (os.getenv("APP_ENV") or "development").strip().lower() == "development":
+        out["invite_token"] = raw_token
+    return out
 
 
 def revoke_invitation(
