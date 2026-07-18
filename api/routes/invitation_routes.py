@@ -37,8 +37,10 @@ class InviteRequest(BaseModel):
 
 class AcceptInviteRequest(BaseModel):
     token: str = Field(..., min_length=16)
-    first_name: str = Field(..., min_length=1, max_length=128)
-    last_name: str = Field(..., min_length=1, max_length=128)
+    full_name: str = Field(default="", max_length=257)
+    # Legacy fields remain accepted for older clients.
+    first_name: str = Field(default="", max_length=128)
+    last_name: str = Field(default="", max_length=128)
     password: str = Field(..., min_length=8)
     confirm_password: str = Field(..., min_length=8)
     phone: str = ""
@@ -167,6 +169,7 @@ def accept(body: AcceptInviteRequest, request: Request):
     try:
         return accept_invitation(
             raw_token=body.token,
+            full_name=body.full_name,
             first_name=body.first_name,
             last_name=body.last_name,
             password=body.password,

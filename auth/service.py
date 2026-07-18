@@ -514,8 +514,9 @@ def reset_password(
             (hash_password(new_password), datetime.now(timezone.utc), user_id),
         )
 
-    # Revoke all existing tokens after password change
+    # Revoke all existing tokens and end sessions after password reset.
     token_service.revoke_all_for_user(user_id)
+    session_service.end_all_sessions(user_id)
 
     audit_service.log_action(user_id, AUDIT_PASSWORD_RESET, ip=ip, user_agent=user_agent)
     return {"detail": "Password reset successfully. Please log in again."}
@@ -624,5 +625,9 @@ def change_password(
             (hash_password(new_password), datetime.now(timezone.utc), datetime.now(timezone.utc), user_id),
         )
 
+    # Force re-login on every device after a password change.
+    token_service.revoke_all_for_user(user_id)
+    session_service.end_all_sessions(user_id)
+
     audit_service.log_action(user_id, AUDIT_PASSWORD_CHANGE, ip=ip, user_agent=user_agent)
-    return {"detail": "Password changed successfully."}
+    return {"detail": "Password changed successfully. Please log in again."}

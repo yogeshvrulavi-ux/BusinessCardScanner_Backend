@@ -37,11 +37,10 @@ async def get_analytics_summary(
             cur.execute(f"""
                 SELECT
                     COUNT(*) AS total,
-                    COUNT(*) FILTER (WHERE c."syncStatus" IN ('synced', 'synced_zoho') OR c."zohoLeadId" IS NOT NULL) AS synced,
+                    COUNT(*) FILTER (WHERE c."syncStatus" = 'synced') AS synced,
                     COUNT(*) FILTER (WHERE c."syncStatus" = 'failed') AS failed,
                     COUNT(*) FILTER (
-                        WHERE COALESCE(c."syncStatus", 'local_only') NOT IN ('synced', 'synced_zoho', 'failed')
-                          AND c."zohoLeadId" IS NULL
+                        WHERE COALESCE(c."syncStatus", 'synced') NOT IN ('synced', 'failed')
                     ) AS pending
                 FROM contacts c
                 LEFT JOIN users u ON c.created_by_user_id = u.id

@@ -122,25 +122,28 @@ class LocalContactBody(BaseModel):
     gstNumber: str = ""
     notes: str = Field(
         default="",
-        description="User-written notes only (not OCR). Stored in Zoho Features as `Notes: {text}` (max 2000 chars).",
+        description="User-written notes only (not OCR). Max 2000 characters.",
         max_length=2000,
     )
     eventName: str = Field(
         default="",
-        description="Event where the card was collected. Stored in Zoho Features as `Event: {name}`.",
+        description="Event where the card was collected.",
     )
     eventId: str | None = None
     cardImageBase64: str | None = None
-    syncStatus: str = "local_only"
-    zohoLeadId: str | None = None
+    syncStatus: str = "synced"
     connectionMode: str = "online"
     skipWhatsApp: bool = False
     skipEmail: bool = False
+    # Scan metadata — not persisted in PostgreSQL; forwarded to the
+    # Google Sheets reporting sync when configured.
+    ocrEngine: str = ""
+    ocrConfidence: float | None = None
+    captureSource: str = ""
 
 
 class SyncStatusBody(BaseModel):
     syncStatus: str
-    zohoLeadId: str | None = None
 
 
 class SyncOutreachOptions(BaseModel):

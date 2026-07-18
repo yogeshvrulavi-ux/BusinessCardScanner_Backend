@@ -270,7 +270,15 @@ def admin_reset_password(user_id: str, body: AdminResetPasswordRequest, request:
             (hash_password(body.new_password), datetime.now(timezone.utc), datetime.now(timezone.utc), user_id),
         )
 
+    from auth.session_service import end_all_sessions
     from auth.token_service import revoke_all_for_user
-    revoke_all_for_user(user_id)
 
-    return {"success": True, "message": "Password reset by admin. All sessions revoked."}
+    revoked = revoke_all_for_user(user_id)
+    ended = end_all_sessions(user_id)
+
+    return {
+        "success": True,
+        "message": "Password reset by admin. All sessions revoked.",
+        "tokens_revoked": revoked,
+        "sessions_ended": ended,
+    }

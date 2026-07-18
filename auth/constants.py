@@ -65,6 +65,7 @@ PUBLIC_PATHS: set[str] = {
     "/static",
     "/api/auth/login",
     "/api/auth/refresh",
+    "/api/auth/logout",
     "/api/auth/forgot-password",
     "/api/auth/reset-password",
     "/api/auth/verify-email",

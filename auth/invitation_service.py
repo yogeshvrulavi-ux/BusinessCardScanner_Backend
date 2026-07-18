@@ -436,9 +436,10 @@ def validate_invitation_token(raw_token: str) -> dict[str, Any]:
 def accept_invitation(
     *,
     raw_token: str,
-    first_name: str,
-    last_name: str,
     password: str,
+    full_name: str = "",
+    first_name: str = "",
+    last_name: str = "",
     phone: str = "",
     username: str | None = None,
     company_name: str = "",
@@ -454,11 +455,16 @@ def accept_invitation(
     if not valid:
         raise InvitationError("WEAK_PASSWORD", "; ".join(errors), 422)
 
+    full_name = full_name.strip()
     first_name = first_name.strip()
     last_name = last_name.strip()
+    if full_name:
+        name_parts = full_name.split(maxsplit=1)
+        first_name = name_parts[0]
+        last_name = name_parts[1] if len(name_parts) > 1 else ""
     phone = (phone or "").strip()
-    if not first_name or not last_name:
-        raise InvitationError("INVALID_NAME", "First and last name are required.", 422)
+    if not first_name:
+        raise InvitationError("INVALID_NAME", "Full name is required.", 422)
 
     token_hash = _hash_token(raw_token.strip())
 
