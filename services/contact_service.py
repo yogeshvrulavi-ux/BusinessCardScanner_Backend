@@ -20,8 +20,8 @@ def save_contact(contact_data, image_path=None):
     contact_data = dict(contact_data)
     contact_data.setdefault("created_at", datetime.utcnow().isoformat())
     contact_data.setdefault("source", "localdb")
-    contact_data.setdefault("status", "pending")
-    contact_data.setdefault("syncStatus", "local_only")
+    contact_data.setdefault("status", "synced")
+    contact_data.setdefault("syncStatus", "synced")
 
     try:
         return storage.create_contact(contact_data, image_path=image_path)
@@ -30,9 +30,9 @@ def save_contact(contact_data, image_path=None):
         raise
 
 
-def get_all_contacts():
+def get_all_contacts(user: dict | None = None):
     try:
-        return storage.list_contacts()
+        return storage.list_contacts(user=user)
     except Exception as exc:
         logger.error("Error reading contacts: %s", exc)
         return []
@@ -46,9 +46,9 @@ def delete_contact(contact_id: str):
     return storage.delete_contact(contact_id)
 
 
-def get_contact_by_id(contact_id: str):
+def get_contact_by_id(contact_id: str, user: dict | None = None):
     try:
-        return storage.get_contact(contact_id)
+        return storage.get_contact(contact_id, user=user)
     except Exception as exc:
         logger.error("Error reading contact: %s", exc)
         return None
@@ -58,7 +58,8 @@ def _normalize_phone(phone: str) -> str:
     return "".join(c for c in str(phone or "") if c.isdigit())
 
 
-def find_duplicate_contacts(contact_data: dict) -> list:
+def find_duplicate_contacts(contact_data: dict, user: dict | None = None) -> list:
+    """Find duplicates within the caller's visible contact set (RBAC-scoped)."""
     email = str(contact_data.get("email") or contact_data.get("emailAddress") or "").strip().lower()
     phone = _normalize_phone(contact_data.get("phone") or contact_data.get("phoneNumber") or "")
     name = str(contact_data.get("fullName") or contact_data.get("name") or "").strip().lower()
@@ -67,7 +68,7 @@ def find_duplicate_contacts(contact_data: dict) -> list:
     duplicates = []
     seen_ids = set()
 
-    for contact in get_all_contacts():
+    for contact in get_all_contacts(user=user):
         cid = contact.get("id")
         if not cid or cid in seen_ids:
             continue

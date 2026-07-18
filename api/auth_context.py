@@ -29,7 +29,7 @@ def get_request_app_user(request: Request) -> dict[str, Any] | None:
 
 
 def app_user_filter_kwargs(request: Request) -> dict[str, str | None]:
-    """Keyword args for get_leads() — scopes Zoho queries to user's company."""
+    """Keyword args for scoped contact queries — email/id of the authenticated user."""
     user = get_request_app_user(request)
     if not user:
         return {"filter_user_email": None, "filter_user_id": None}
@@ -40,7 +40,7 @@ def app_user_filter_kwargs(request: Request) -> dict[str, str | None]:
 
 
 def get_request_app_user_for_sync(request: Request) -> dict[str, Any] | None:
-    """App user stamped onto Zoho leads on create/sync."""
+    """Authenticated user stamped onto contacts on create/sync."""
     return get_request_app_user(request)
 
 

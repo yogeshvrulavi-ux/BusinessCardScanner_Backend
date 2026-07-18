@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import secrets
 import time
@@ -233,6 +234,16 @@ def create_invitation(
 
     result = _serialize_invite(row)
     result["detail"] = "Invitation sent."
+    # Local/dev only: allow completing POST /api/invitations/accept without reading email.
+    # Production never returns the raw token (email link only).
+    if (os.getenv("APP_ENV") or "development").strip().lower() == "development":
+        result["invite_token"] = raw_token
+        try:
+            from config.urls import get_frontend_base_url
+
+            result["invite_url"] = f"{get_frontend_base_url()}/register?token={raw_token}"
+        except RuntimeError:
+            result["invite_url"] = f"/register?token={raw_token}"
     return result
 
 
@@ -334,7 +345,10 @@ def resend_invitation(
         user_agent=user_agent,
         new_value={"invitation_id": invitation_id, "email": row["email"]},
     )
-    return {"success": True, "detail": "Invitation resent."}
+    out: dict[str, Any] = {"success": True, "detail": "Invitation resent."}
+    if (os.getenv("APP_ENV") or "development").strip().lower() == "development":
+        out["invite_token"] = raw_token
+    return out
 
 
 def revoke_invitation(
@@ -422,9 +436,10 @@ def validate_invitation_token(raw_token: str) -> dict[str, Any]:
 def accept_invitation(
     *,
     raw_token: str,
-    first_name: str,
-    last_name: str,
     password: str,
+    full_name: str = "",
+    first_name: str = "",
+    last_name: str = "",
     phone: str = "",
     username: str | None = None,
     company_name: str = "",
@@ -440,11 +455,16 @@ def accept_invitation(
     if not valid:
         raise InvitationError("WEAK_PASSWORD", "; ".join(errors), 422)
 
+    full_name = full_name.strip()
     first_name = first_name.strip()
     last_name = last_name.strip()
+    if full_name:
+        name_parts = full_name.split(maxsplit=1)
+        first_name = name_parts[0]
+        last_name = name_parts[1] if len(name_parts) > 1 else ""
     phone = (phone or "").strip()
-    if not first_name or not last_name:
-        raise InvitationError("INVALID_NAME", "First and last name are required.", 422)
+    if not first_name:
+        raise InvitationError("INVALID_NAME", "Full name is required.", 422)
 
     token_hash = _hash_token(raw_token.strip())
 

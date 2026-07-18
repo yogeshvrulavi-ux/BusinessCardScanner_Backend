@@ -30,6 +30,7 @@ from services.contact_service import (
     update_contact,
 )
 from services.contact_storage import ContactStorageError
+from services.google_sheets_service import fire_sheets_sync
 from services.local_db_service import LocalDbError
 from utils.file_utils import cleanup_temp_file, save_temp_file, validate_file
 
@@ -37,12 +38,21 @@ router = APIRouter(tags=["Contacts"])
 logger = logging.getLogger(__name__)
 
 
+def _sheets_extras(data: dict[str, Any]) -> dict[str, Any]:
+    """Scan metadata forwarded to the Google Sheets sync (never persisted)."""
+    return {
+        "ocrEngine": str(data.get("ocrEngine") or ""),
+        "ocrConfidence": data.get("ocrConfidence"),
+        "captureSource": str(data.get("captureSource") or ""),
+    }
+
+
 @router.post("/contacts/check-duplicates")
 async def check_duplicates(
     request: DuplicateCheckRequest,
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
-    return {"duplicates": find_duplicate_contacts(request.model_dump())}
+    return {"duplicates": find_duplicate_contacts(request.model_dump(), user=user)}
 
 
 @router.put("/contacts/{contact_id}")
@@ -56,6 +66,7 @@ async def update_existing_contact(
     result = update_contact(contact_id, request.contact)
     if not result.get("success"):
         raise HTTPException(status_code=404, detail=result.get("error", "Contact not found"))
+    fire_sheets_sync(contact_id, _sheets_extras(request.contact))
     return result
 
 
@@ -90,6 +101,8 @@ async def create_contact(
 
         if not result.get("success"):
             raise HTTPException(status_code=500, detail="Failed to save contact")
+
+        fire_sheets_sync(str(result.get("id") or ""), _sheets_extras(contact_data))
 
         whatsapp_result, email_result = await schedule_outreach_for_contact(
             contact_data,
@@ -134,6 +147,33 @@ async def get_contact_api(contact_id: str, user: dict = Depends(get_current_user
     return require_contact_access(user, contact)
 
 
+@router.get("/api/contacts/{contact_id}/card-image", summary="Original card image")
+async def get_contact_card_image(contact_id: str, user: dict = Depends(get_current_user)):
+    """Serve the stored business-card image (base64 in PostgreSQL) as a file."""
+    import base64
+
+    from fastapi.responses import Response
+
+    contact = storage.get_contact(contact_id, user=user)
+    require_contact_access(user, contact)
+
+    data_url = str(contact.get("cardImageBase64") or "")
+    if not data_url:
+        raise HTTPException(status_code=404, detail="No card image stored for this contact")
+
+    media_type = "image/jpeg"
+    encoded = data_url
+    if data_url.startswith("data:"):
+        header, _, encoded = data_url.partition(",")
+        media_type = header.removeprefix("data:").split(";", 1)[0] or media_type
+    try:
+        image_bytes = base64.b64decode(encoded)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Stored card image is corrupted") from exc
+
+    return Response(content=image_bytes, media_type=media_type)
+
+
 @router.post("/api/contacts", summary="Save contact")
 async def create_contact_json(
     body: LocalContactBody,
@@ -151,6 +191,9 @@ async def create_contact_json(
             "contact": storage.get_contact(contact_id, user=user),
             "database": "postgresql",
         }
+
+        # Secondary sync: PostgreSQL commit succeeded — mirror to Google Sheets.
+        fire_sheets_sync(contact_id, _sheets_extras(payload))
 
         if is_online_mode(body.connectionMode):
             try:
@@ -188,6 +231,7 @@ async def update_contact_json(
         result = storage.update_contact(contact_id, payload)
         if not result.get("success"):
             raise HTTPException(status_code=404, detail=result.get("error", "Contact not found"))
+        fire_sheets_sync(contact_id, _sheets_extras(payload))
         return {"success": True, "id": contact_id, "contact": storage.get_contact(contact_id, user=user)}
     except ContactStorageError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -206,7 +250,6 @@ async def patch_contact_sync_status(
     storage.patch_sync_status(
         contact_id,
         sync_status=body.syncStatus,
-        zoho_lead_id=body.zohoLeadId,
     )
     contact = storage.get_contact(contact_id, user=user)
     if not contact:

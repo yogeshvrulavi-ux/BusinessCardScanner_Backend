@@ -115,17 +115,15 @@ def mark_email_sent(contact_id: str) -> None:
 
 
 def _row_to_contact(row: dict[str, Any]) -> dict[str, Any]:
-    sync_status = str(row.get("syncStatus") or "local_only")
-    zoho_lead_id = row.get("zohoLeadId")
-    if sync_status == "synced_zoho" or zoho_lead_id:
-        status = "synced"
-        zoho_synced = True
-    elif sync_status == "failed":
+    # PostgreSQL is the system of record. Legacy Zoho values map to synced.
+    sync_status = str(row.get("syncStatus") or "synced")
+    if sync_status in ("synced_zoho", "local_only"):
+        sync_status = "synced"
+    if sync_status == "failed":
         status = "failed"
-        zoho_synced = False
     else:
-        status = "pending"
-        zoho_synced = False
+        status = "synced"
+        sync_status = "synced"
 
     name = row.get("fullName") or ""
     created = row.get("createdAt")
@@ -155,34 +153,39 @@ def _row_to_contact(row: dict[str, Any]) -> dict[str, Any]:
         "socialLinks": row.get("socialLinks") or "",
         "gstNumber": row.get("gstNumber") or "",
         "notes": row.get("notes") or "",
+        "eventName": row.get("eventName") or "",
+        "eventId": row.get("eventId"),
         "cardImageBase64": row.get("cardImageBase64"),
         "syncStatus": sync_status,
-        "firebaseId": row.get("firebaseId"),
-        "zohoLeadId": zoho_lead_id,
         "source": "localdb",
         "status": status,
-        "zohoSynced": zoho_synced,
         "created_at": created or "",
         "updatedAt": updated or "",
         "lastSync": (
             "Synced"
             if status == "synced"
-            else "Pending sync"
-            if sync_status == "local_only"
-            else str(updated or "Pending")
+            else str(updated or "Sync failed")
         ),
         "channels": {"whatsapp": bool(row.get("phone")), "email": bool(row.get("email"))},
         "whatsappSent": has_whatsapp_sent({"notes": row.get("notes") or ""}),
         "emailSent": has_email_sent({"notes": row.get("notes") or ""}),
     }
 
-    # Ownership fields (from JOIN with users/companies)
+    # Ownership fields (from JOIN with users/companies or stored columns)
     if "admin_name" in row:
         result["admin_name"] = row.get("admin_name") or ""
     if "user_name" in row:
         result["user_name"] = row.get("user_name") or ""
     if "created_by_user_id" in row:
         result["created_by_user_id"] = str(row.get("created_by_user_id") or "")
+    owner_company = row.get("owner_company_id")
+    if owner_company is None:
+        owner_company = row.get("joined_owner_company_id")
+    if owner_company is not None:
+        result["owner_company_id"] = str(owner_company)
+        result["company_id"] = str(owner_company)
+    if row.get("created_by_role"):
+        result["created_by_role"] = str(row.get("created_by_role") or "")
 
     return result
 
@@ -199,9 +202,13 @@ def _payload_to_local_body(
         first = first or (parts[0] if parts else "")
         last = parts[1] if len(parts) > 1 else (parts[0] if parts else "")
 
-    sync_status = contact_data.get("syncStatus") or "local_only"
-    if contact_data.get("zohoLeadId") or contact_data.get("zohoSynced"):
-        sync_status = "synced_zoho"
+    # Anything written to PostgreSQL is synced to the app database.
+    # Browser offline queue uses "pending" until it POSTs here.
+    sync_status = str(contact_data.get("syncStatus") or "synced").strip()
+    if sync_status in ("synced_zoho", "local_only", ""):
+        sync_status = "synced"
+    if sync_status not in ("synced", "failed"):
+        sync_status = "synced"
 
     return {
         "fullName": str(name).strip() or "Contact",
@@ -224,9 +231,10 @@ def _payload_to_local_body(
         "socialLinks": str(contact_data.get("socialLinks") or "").strip(),
         "gstNumber": str(contact_data.get("gstNumber") or "").strip(),
         "notes": str(contact_data.get("notes") or "").strip(),
+        "eventName": str(contact_data.get("eventName") or "").strip(),
+        "eventId": (str(contact_data.get("eventId")).strip() if contact_data.get("eventId") else None),
         "cardImageBase64": card_image_base64 or contact_data.get("cardImageBase64"),
         "syncStatus": sync_status,
-        "zohoLeadId": contact_data.get("zohoLeadId"),
     }
 
 
@@ -247,10 +255,11 @@ def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
                 base_query = """
                     SELECT c.*,
                            COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
-                           COALESCE(comp.company_name, '') AS admin_name
+                           COALESCE(comp.company_name, '') AS admin_name,
+                           COALESCE(c.owner_company_id, u.company_id) AS joined_owner_company_id
                     FROM contacts c
                     LEFT JOIN users u ON c.created_by_user_id = u.id
-                    LEFT JOIN companies comp ON u.company_id = comp.id
+                    LEFT JOIN companies comp ON COALESCE(c.owner_company_id, u.company_id) = comp.id
                     WHERE (c.is_deleted = FALSE OR c.is_deleted IS NULL)
                 """
                 params: list[Any] = []
@@ -263,9 +272,14 @@ def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
                     if role == "USER" and user_id:
                         base_query += " AND c.created_by_user_id = %s"
                         params.append(user_id)
-                    elif role == "ADMIN" and company_id:
-                        base_query += " AND u.company_id = %s"
-                        params.append(company_id)
+                    elif role == "ADMIN":
+                        if company_id:
+                            base_query += " AND COALESCE(c.owner_company_id, u.company_id) = %s"
+                            params.append(company_id)
+                        elif user_id:
+                            # Harden: Admin without company only sees their own contacts.
+                            base_query += " AND c.created_by_user_id = %s"
+                            params.append(user_id)
                     # SUPER_ADMIN sees all
 
                 base_query += ' ORDER BY c."createdAt" DESC'
@@ -288,10 +302,10 @@ def get_contact(contact_id: str, user: dict[str, Any] | None = None) -> dict[str
                     SELECT c.*,
                            COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
                            COALESCE(comp.company_name, '') AS admin_name,
-                           u.company_id AS owner_company_id
+                           COALESCE(c.owner_company_id, u.company_id) AS joined_owner_company_id
                     FROM contacts c
                     LEFT JOIN users u ON c.created_by_user_id = u.id
-                    LEFT JOIN companies comp ON u.company_id = comp.id
+                    LEFT JOIN companies comp ON COALESCE(c.owner_company_id, u.company_id) = comp.id
                     WHERE c.id = %s AND (c.is_deleted = FALSE OR c.is_deleted IS NULL)
                 """
                 params: list[Any] = [contact_id]
@@ -303,23 +317,51 @@ def get_contact(contact_id: str, user: dict[str, Any] | None = None) -> dict[str
                     if role == "USER" and user_id:
                         query += " AND c.created_by_user_id = %s"
                         params.append(user_id)
-                    elif role == "ADMIN" and company_id:
-                        query += " AND u.company_id = %s"
-                        params.append(company_id)
+                    elif role == "ADMIN":
+                        if company_id:
+                            query += " AND COALESCE(c.owner_company_id, u.company_id) = %s"
+                            params.append(company_id)
+                        elif user_id:
+                            query += " AND c.created_by_user_id = %s"
+                            params.append(user_id)
                     # SUPER_ADMIN: no extra filter
 
                 cur.execute(query, params)
                 row = cur.fetchone()
         if not row:
             return None
-        contact = _row_to_contact(dict(row))
-        if row.get("owner_company_id") is not None:
-            contact["owner_company_id"] = str(row["owner_company_id"])
-        return contact
+        return _row_to_contact(dict(row))
     except LocalDbError:
         raise
     except Exception as exc:
         raise LocalDbError(str(exc)) from exc
+
+
+def _resolve_creator_meta(created_by_user_id: str | None) -> tuple[str | None, str]:
+    """Return (owner_company_id, created_by_role) for the creating user."""
+    if not created_by_user_id:
+        return None, ""
+    try:
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT u.company_id, r.name AS role_name
+                    FROM users u
+                    LEFT JOIN roles r ON r.id = u.role_id
+                    WHERE u.id = %s
+                    """,
+                    (created_by_user_id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None, ""
+        company_id = str(row["company_id"]) if row.get("company_id") else None
+        role_name = str(row.get("role_name") or "")
+        return company_id, role_name
+    except Exception as exc:
+        logger.warning("Failed to resolve creator meta for %s: %s", created_by_user_id, exc)
+        return None, ""
 
 
 def create_contact(
@@ -332,6 +374,10 @@ def create_contact(
     )
     contact_id = str(uuid.uuid4())
     now = datetime.utcnow()
+    created_by_user_id = contact_data.get("created_by_user_id")
+    owner_company_id, created_by_role = _resolve_creator_meta(
+        str(created_by_user_id) if created_by_user_id else None
+    )
 
     try:
         with _connect() as conn:
@@ -342,10 +388,12 @@ def create_contact(
                         id, "fullName", "firstName", "lastName", designation, company,
                         phone, "secondaryPhone", email, "secondaryEmail", website,
                         "secondaryWebsite", address, "secondaryAddress", "socialLinks",
-                        "gstNumber", notes, "cardImageBase64", "syncStatus", "zohoLeadId",
-                        "createdAt", "updatedAt", created_by_user_id
+                        "gstNumber", notes, "eventName", "eventId", "cardImageBase64",
+                        "syncStatus", "createdAt", "updatedAt", created_by_user_id,
+                        owner_company_id, created_by_role
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     """,
                     (
@@ -366,12 +414,15 @@ def create_contact(
                         body["socialLinks"],
                         body["gstNumber"],
                         body["notes"],
+                        body["eventName"],
+                        body.get("eventId"),
                         body["cardImageBase64"],
                         body["syncStatus"],
-                        body.get("zohoLeadId"),
                         now,
                         now,
-                        contact_data.get("created_by_user_id"),
+                        created_by_user_id,
+                        owner_company_id,
+                        created_by_role,
                     ),
                 )
             conn.commit()
@@ -395,9 +446,9 @@ def update_contact(contact_id: str, contact_data: dict[str, Any]) -> dict[str, A
                         designation = %s, company = %s, phone = %s, "secondaryPhone" = %s,
                         email = %s, "secondaryEmail" = %s, website = %s, "secondaryWebsite" = %s,
                         address = %s, "secondaryAddress" = %s, "socialLinks" = %s,
-                        "gstNumber" = %s, notes = %s, "cardImageBase64" = COALESCE(%s, "cardImageBase64"),
-                        "syncStatus" = %s, "zohoLeadId" = COALESCE(%s, "zohoLeadId"),
-                        "updatedAt" = %s
+                        "gstNumber" = %s, notes = %s, "eventName" = %s, "eventId" = COALESCE(%s, "eventId"),
+                        "cardImageBase64" = COALESCE(%s, "cardImageBase64"),
+                        "syncStatus" = %s, "updatedAt" = %s
                     WHERE id = %s
                     """,
                     (
@@ -417,9 +468,10 @@ def update_contact(contact_id: str, contact_data: dict[str, Any]) -> dict[str, A
                         body["socialLinks"],
                         body["gstNumber"],
                         body["notes"],
+                        body["eventName"],
+                        body.get("eventId"),
                         body["cardImageBase64"],
                         body["syncStatus"],
-                        body.get("zohoLeadId"),
                         datetime.utcnow(),
                         contact_id,
                     ),
@@ -472,16 +524,18 @@ def patch_sync_status(
     sync_status: str,
     zoho_lead_id: str | None = None,
 ) -> None:
+    del zoho_lead_id  # Deprecated Zoho field; column removed.
+    normalized = "failed" if sync_status == "failed" else "synced"
     try:
         with _connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE contacts
-                    SET "syncStatus" = %s, "zohoLeadId" = COALESCE(%s, "zohoLeadId"), "updatedAt" = %s
+                    SET "syncStatus" = %s, "updatedAt" = %s
                     WHERE id = %s
                     """,
-                    (sync_status, zoho_lead_id, datetime.utcnow(), contact_id),
+                    (normalized, datetime.utcnow(), contact_id),
                 )
             conn.commit()
     except Exception as exc:

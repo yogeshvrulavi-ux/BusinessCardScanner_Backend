@@ -92,7 +92,7 @@ def patch_sync_status(
         return
     from services import local_db_service as local_db
 
-    local_db.patch_sync_status(contact_id, sync_status, zoho_lead_id)
+    local_db.patch_sync_status(contact_id, sync_status=sync_status, zoho_lead_id=zoho_lead_id)
 
 
 def mark_whatsapp_sent(contact_id: str) -> None:

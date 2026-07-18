@@ -503,25 +503,62 @@ def extract_tax_numbers(text: str) -> List[str]:
     return taxes
 
 
-def extract_all_addresses(lines: List[str]) -> tuple[List[str], List[str]]:
-    address_parts: List[str] = []
-    remaining_lines: List[str] = []
-    address_patterns = re.compile(
-        r"\b(street|st|avenue|ave|boulevard|blvd|road|rd|drive|drv|lane|ln|suite|ste|floor|fl|building|bldg|p\.?o\.?\s*box)\b",
-        re.IGNORECASE,
-    )
-    zip_pattern = re.compile(r"\b\d{5}(?:-\d{4})?\b")
+ADDRESS_LINE_PATTERN = re.compile(
+    r"\b(street|st|avenue|ave|boulevard|blvd|road|rd|drive|drv|lane|ln|suite|ste"
+    r"|floor|fl|building|bldg|block|plot|sector|phase|layout|nagar|colony|tower"
+    r"|complex|p\.?o\.?\s*box|pin\s*code|pincode|pin"
+    r"|mumbai|delhi|bengaluru|bangalore|hyderabad|chennai|kolkata|pune"
+    r"|gurugram|gurgaon|noida|ahmedabad|jaipur|kochi|coimbatore|india)\b",
+    re.IGNORECASE,
+)
+# US zip (5 or 5+4) or Indian 6-digit PIN code.
+ADDRESS_ZIP_PATTERN = re.compile(r"\b\d{5}(?:-\d{4})?\b|\b\d{6}\b")
+ADDRESS_PREFIX_PATTERN = re.compile(r"^(address|add|location)\s*[:\-\.]?\s*", re.IGNORECASE)
 
-    for line in lines:
-        if address_patterns.search(line) or zip_pattern.search(line) or (
-            len(line) > 5 and line[0].isdigit() and "," in line
-        ):
-            clean_line = re.sub(r"^(address|add|a|location)\s*[:\-\.]?\s*", "", line, flags=re.IGNORECASE).strip()
-            address_parts.append(clean_line)
+
+def _is_address_line(line: str) -> bool:
+    return bool(
+        ADDRESS_LINE_PATTERN.search(line)
+        or ADDRESS_ZIP_PATTERN.search(line)
+        or (len(line) > 5 and line[0].isdigit() and "," in line)
+    )
+
+
+def extract_all_addresses(lines: List[str]) -> tuple[List[str], List[str]]:
+    """Group consecutive address lines into complete multi-line address blocks.
+
+    Multi-line addresses (e.g. building / street / city-PIN on separate lines)
+    are joined with newlines so the full address is preserved. A single
+    non-matching line sandwiched between two address lines (e.g. an area name)
+    is treated as part of the same address block.
+    """
+    matches = [_is_address_line(line) for line in lines]
+
+    # Sandwich rule: keep short connector lines that sit between address lines.
+    include = list(matches)
+    for idx in range(1, len(lines) - 1):
+        if not include[idx] and include[idx - 1] and matches[idx + 1] and len(lines[idx]) <= 60:
+            include[idx] = True
+
+    address_blocks: List[str] = []
+    remaining_lines: List[str] = []
+    current_block: List[str] = []
+
+    for line, keep in zip(lines, include):
+        if keep:
+            clean_line = ADDRESS_PREFIX_PATTERN.sub("", line).strip()
+            if clean_line:
+                current_block.append(clean_line)
         else:
+            if current_block:
+                address_blocks.append("\n".join(current_block))
+                current_block = []
             remaining_lines.append(line)
 
-    return address_parts, remaining_lines
+    if current_block:
+        address_blocks.append("\n".join(current_block))
+
+    return address_blocks, remaining_lines
 
 
 def build_confidence(result: Dict[str, Any], raw_text: str) -> Dict[str, float]:
@@ -607,8 +644,7 @@ def parse_business_card(raw_text: str) -> Dict[str, Any]:
     social_links = extract_social_links(raw_text)
     gst_numbers = extract_tax_numbers(raw_text)
     notes = " ".join(lines[:3]).strip() if lines else ""
-
-    address = ", ".join(address_list) if address_list else ""
+    address = address_list[0] if address_list else ""
 
     result = {
         "name": name.title().strip(),

@@ -195,15 +195,17 @@ SCHEMA_STATEMENTS: list[str] = [
         "socialLinks"       TEXT NOT NULL DEFAULT '',
         "gstNumber"         TEXT NOT NULL DEFAULT '',
         notes               TEXT NOT NULL DEFAULT '',
+        "eventName"         TEXT NOT NULL DEFAULT '',
+        "eventId"           TEXT,
         "cardImageBase64"   TEXT,
-        "syncStatus"        TEXT NOT NULL DEFAULT 'local_only',
-        "zohoLeadId"        TEXT,
-        "firebaseId"        TEXT,
+        "syncStatus"        TEXT NOT NULL DEFAULT 'synced',
         "createdAt"         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         "updatedAt"         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         is_deleted          BOOLEAN NOT NULL DEFAULT FALSE,
         deleted_at          TIMESTAMPTZ,
-        created_by_user_id  UUID REFERENCES users(id) ON DELETE SET NULL
+        created_by_user_id  UUID REFERENCES users(id) ON DELETE SET NULL,
+        owner_company_id    UUID REFERENCES companies(id) ON DELETE SET NULL,
+        created_by_role     VARCHAR(64) NOT NULL DEFAULT ''
     );
     """,
     # ── Contacts: soft-delete columns (idempotent for older DBs) ───────────
@@ -232,12 +234,62 @@ SCHEMA_STATEMENTS: list[str] = [
             ) THEN
                 ALTER TABLE contacts ADD COLUMN created_by_user_id UUID;
             END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'contacts' AND column_name = 'eventName'
+            ) THEN
+                ALTER TABLE contacts ADD COLUMN "eventName" TEXT NOT NULL DEFAULT '';
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'contacts' AND column_name = 'eventId'
+            ) THEN
+                ALTER TABLE contacts ADD COLUMN "eventId" TEXT;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'contacts' AND column_name = 'owner_company_id'
+            ) THEN
+                ALTER TABLE contacts ADD COLUMN owner_company_id UUID;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'contacts' AND column_name = 'created_by_role'
+            ) THEN
+                ALTER TABLE contacts ADD COLUMN created_by_role VARCHAR(64) NOT NULL DEFAULT '';
+            END IF;
         END IF;
     END $$;
     """,
+    # Remap legacy Zoho / local_only values: rows already in PostgreSQL are synced.
+    """
+    UPDATE contacts
+    SET "syncStatus" = 'synced'
+    WHERE "syncStatus" IN ('synced_zoho', 'local_only');
+    """,
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'contacts'
+              AND column_name = 'zohoLeadId'
+        ) THEN
+            UPDATE contacts
+            SET "syncStatus" = 'synced'
+            WHERE "zohoLeadId" IS NOT NULL AND "zohoLeadId" <> '';
+        END IF;
+    END $$;
+    """,
+    'ALTER TABLE contacts DROP COLUMN IF EXISTS "firebaseId";',
+    'ALTER TABLE contacts DROP COLUMN IF EXISTS "zohoLeadId";',
+    "ALTER TABLE contacts ALTER COLUMN \"syncStatus\" SET DEFAULT 'synced';",
     "CREATE INDEX IF NOT EXISTS idx_contacts_is_deleted ON contacts(is_deleted);",
     "CREATE INDEX IF NOT EXISTS idx_contacts_created_by ON contacts(created_by_user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_contacts_owner_company ON contacts(owner_company_id);",
     "CREATE INDEX IF NOT EXISTS idx_contacts_created_at ON contacts(\"createdAt\");",
+    'CREATE INDEX IF NOT EXISTS idx_contacts_event_name ON contacts("eventName");',
     # ── Invitations (secure invite-based onboarding) ───────────────────────
     """
     CREATE TABLE IF NOT EXISTS invitations (

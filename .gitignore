@@ -5,6 +5,8 @@
 *-firebase-adminsdk-*.json
 serviceAccountKey.json
 *credentials*.json
+*service-account*.json
+*service_account*.json
 *.pem
 *.key
 

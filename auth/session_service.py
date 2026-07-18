@@ -129,6 +129,12 @@ def get_active_sessions(user_id: str) -> list[dict[str, Any]]:
                 # Mark expired
                 _end_session(row["id"])
                 continue
+        if row.get("id") is not None:
+            row["id"] = str(row["id"])
+        if row.get("user_id") is not None:
+            row["user_id"] = str(row["user_id"])
+        if row.get("refresh_token_id") is not None:
+            row["refresh_token_id"] = str(row["refresh_token_id"])
         # Serialize datetimes
         for key in ("login_at", "last_activity", "expires_at"):
             if row.get(key) and hasattr(row[key], "isoformat"):

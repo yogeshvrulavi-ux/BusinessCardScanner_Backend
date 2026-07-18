@@ -464,7 +464,8 @@ def extract_address(contact: dict[str, Any]) -> str:
 
 
 def _template_param(text: str, fallback: str = "—", max_len: int = 200) -> str:
-    cleaned = str(text or "").strip()
+    # WhatsApp template parameters must not contain newlines or tabs.
+    cleaned = re.sub(r"\s*[\r\n\t]+\s*", ", ", str(text or "")).strip()
     if not cleaned:
         return fallback
     if len(cleaned) > max_len:
@@ -510,6 +511,91 @@ def _resolve_public_asset_url(url: str | None) -> str | None:
     return raw.replace("__BACKEND_BASE_URL__", get_backend_base_url())
 
 
+def _is_publicly_reachable_url(url: str) -> bool:
+    """Meta must be able to download header media — local/LAN hosts can't work."""
+    lowered = url.lower()
+    return not any(
+        host in lowered
+        for host in ("localhost", "127.0.0.1", "0.0.0.0", "://192.168.", "://10.")
+    )
+
+
+def _local_path_for_static_url(url: str) -> Path | None:
+    """Map a /static/... URL back to the file inside the backend static folder."""
+    marker = "/static/"
+    idx = url.find(marker)
+    if idx == -1:
+        return None
+    rel = url[idx + len(marker):].split("?")[0]
+    static_root = (_BACKEND_ROOT / "static").resolve()
+    path = (static_root / rel).resolve()
+    if not str(path).startswith(str(static_root)):
+        return None
+    return path if path.is_file() else None
+
+
+_MEDIA_CACHE_PATH = _BACKEND_ROOT / "data" / "whatsapp_media_cache.json"
+# Meta media ids are valid for 30 days; refresh a little earlier.
+_MEDIA_ID_TTL_SECONDS = 25 * 24 * 3600
+
+
+def _load_media_cache() -> dict[str, Any]:
+    try:
+        with _MEDIA_CACHE_PATH.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_media_cache(cache: dict[str, Any]) -> None:
+    try:
+        _MEDIA_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _MEDIA_CACHE_PATH.open("w", encoding="utf-8") as f:
+            json.dump(cache, f)
+    except Exception as exc:
+        logger.warning("Could not persist WhatsApp media cache: %s", exc)
+
+
+def _get_or_upload_header_media(file_path: Path) -> str | None:
+    """Upload a local document to Meta once and reuse the returned media id."""
+    cache = _load_media_cache()
+    entry = cache.get(file_path.name) or {}
+    media_id = str(entry.get("media_id") or "")
+    uploaded_at = float(entry.get("uploaded_at") or 0)
+    if media_id and (time.time() - uploaded_at) < _MEDIA_ID_TTL_SECONDS:
+        return media_id
+
+    if not is_whatsapp_configured():
+        return None
+    try:
+        url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/media"
+        with file_path.open("rb") as f:
+            response = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
+                data={"messaging_product": "whatsapp", "type": "application/pdf"},
+                files={"file": (file_path.name, f, "application/pdf")},
+                timeout=60,
+            )
+        data = response.json()
+        if response.status_code >= 400:
+            logger.warning("WhatsApp media upload failed for %s: %s", file_path.name, data)
+            return None
+        media_id = str(data.get("id") or "")
+        if media_id:
+            cache[file_path.name] = {"media_id": media_id, "uploaded_at": time.time()}
+            _save_media_cache(cache)
+            logger.info(
+                "[WhatsApp] Uploaded header document %s as media id %s",
+                file_path.name,
+                media_id,
+            )
+        return media_id or None
+    except Exception as exc:
+        logger.warning("WhatsApp media upload error for %s: %s", file_path, exc)
+        return None
+
+
 def _build_header_component(template_def: dict[str, Any]) -> dict[str, Any] | None:
     """Build a Meta template header component from the JSON definition."""
     for comp in template_def.get("components", []):
@@ -523,6 +609,30 @@ def _build_header_component(template_def: dict[str, Any]) -> dict[str, Any] | No
             if not doc_url:
                 return None
             filename = str(doc_url).split("/")[-1] or "document.pdf"
+
+            if not _is_publicly_reachable_url(doc_url):
+                # Meta cannot download from localhost — upload the file and send by media id.
+                local_path = _local_path_for_static_url(doc_url)
+                media_id = _get_or_upload_header_media(local_path) if local_path else None
+                if media_id:
+                    return {
+                        "type": "header",
+                        "parameters": [
+                            {
+                                "type": "document",
+                                "document": {
+                                    "id": media_id,
+                                    "filename": filename,
+                                },
+                            }
+                        ],
+                    }
+                logger.warning(
+                    "WhatsApp header document %s is not publicly reachable and media "
+                    "upload failed — sending template without guaranteed delivery.",
+                    doc_url,
+                )
+
             return {
                 "type": "header",
                 "parameters": [

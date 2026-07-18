@@ -7,8 +7,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 
 from auth.dependencies import get_current_user
-from auth.session_service import end_all_sessions, end_session, get_active_sessions
-from auth.token_service import revoke_all_for_user
+from auth.session_service import end_all_sessions, end_session, get_active_sessions, get_session
+from auth.token_service import revoke_all_for_user, revoke_refresh_token
 
 router = APIRouter(prefix="/api/sessions", tags=["Sessions"])
 logger = logging.getLogger(__name__)
@@ -45,9 +45,13 @@ def logout_all_devices(request: Request):
 def logout_device(session_id: str, request: Request):
     user = get_current_user(request)
     sessions = get_active_sessions(user["id"])
-    owned = any(s["id"] == session_id for s in sessions)
+    owned = any(str(s["id"]) == str(session_id) for s in sessions)
     if not owned:
         raise HTTPException(status_code=404, detail="Session not found or not owned by you.")
 
+    session = get_session(session_id)
+    refresh_token_id = str((session or {}).get("refresh_token_id") or "").strip()
+    if refresh_token_id:
+        revoke_refresh_token(refresh_token_id)
     end_session(session_id)
     return {"success": True, "message": "Session ended."}
