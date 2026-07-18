@@ -976,11 +976,11 @@ async def schedule_whatsapp_for_contact(
         delivery = await asyncio.to_thread(send_scan_thank_you_to_contact, contact)
         result = delivery["result"]
         message_id = (result.get("messages") or [{}])[0].get("id")
-        if contact_id:
+        has_whatsapp = bool(delivery.get("recipient_has_whatsapp", False))
+        if contact_id and has_whatsapp:
             from services import contact_storage as storage
 
             await asyncio.to_thread(storage.mark_whatsapp_sent, contact_id)
-        has_whatsapp = bool(delivery.get("recipient_has_whatsapp", False))
         ok = {
             "attempted": True,
             "sent": has_whatsapp,

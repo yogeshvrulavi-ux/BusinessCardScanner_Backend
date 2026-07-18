@@ -12,6 +12,16 @@ from api.schemas import LocalContactBody
 logger = logging.getLogger(__name__)
 
 
+def _delivery_state(result: dict[str, Any]) -> str:
+    if result.get("sent") is True:
+        return "success"
+    if result.get("attempted") is True:
+        return "failure"
+    if result.get("error"):
+        return "not_sent"
+    return "pending"
+
+
 def is_online_mode(value: str | None) -> bool:
     return str(value or "online").strip().lower() != "offline"
 
@@ -106,8 +116,16 @@ async def schedule_outreach_for_contact(
         "on_zoho_sync": on_save,  # email/whatsapp services still accept this flag name
         "contact_id": contact_id,
     }
-    whatsapp_result: dict[str, Any] = {"sent": False, "error": None}
-    email_result: dict[str, Any] = {"sent": False, "error": None}
+    whatsapp_result: dict[str, Any] = {
+        "attempted": False,
+        "sent": False,
+        "error": "Skipped by request." if skip_whatsapp else None,
+    }
+    email_result: dict[str, Any] = {
+        "attempted": False,
+        "sent": False,
+        "error": "Skipped by request." if skip_email else None,
+    }
 
     tasks: list[tuple[str, Any]] = []
     if not skip_whatsapp:
@@ -136,6 +154,16 @@ async def schedule_outreach_for_contact(
                 whatsapp_result = result
             else:
                 email_result = result
+
+    if contact_id:
+        await asyncio.to_thread(
+            storage.update_outreach_delivery,
+            contact_id,
+            email_status=_delivery_state(email_result),
+            email_error=email_result.get("error"),
+            whatsapp_status=_delivery_state(whatsapp_result),
+            whatsapp_error=whatsapp_result.get("error"),
+        )
 
     return whatsapp_result, email_result
 

@@ -114,6 +114,43 @@ def mark_email_sent(contact_id: str) -> None:
         logger.warning("Failed to mark email sent for %s: %s", contact_id, exc)
 
 
+def update_outreach_delivery(
+    contact_id: str,
+    *,
+    email_status: str | None = None,
+    email_error: str | None = None,
+    whatsapp_status: str | None = None,
+    whatsapp_error: str | None = None,
+) -> None:
+    """Persist delivery outcomes so every role sees the same indication."""
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE contacts
+                    SET email_delivery_status = COALESCE(%s, email_delivery_status),
+                        email_delivery_error = CASE WHEN %s IS NULL THEN email_delivery_error ELSE %s END,
+                        whatsapp_delivery_status = COALESCE(%s, whatsapp_delivery_status),
+                        whatsapp_delivery_error = CASE WHEN %s IS NULL THEN whatsapp_delivery_error ELSE %s END,
+                        "updatedAt" = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        email_status,
+                        email_status,
+                        email_error,
+                        whatsapp_status,
+                        whatsapp_status,
+                        whatsapp_error,
+                        datetime.utcnow(),
+                        contact_id,
+                    ),
+                )
+    except Exception as exc:
+        logger.warning("Failed to persist outreach delivery for %s: %s", contact_id, exc)
+
+
 def _row_to_contact(row: dict[str, Any]) -> dict[str, Any]:
     # PostgreSQL is the system of record. Legacy Zoho values map to synced.
     sync_status = str(row.get("syncStatus") or "synced")
@@ -169,11 +206,17 @@ def _row_to_contact(row: dict[str, Any]) -> dict[str, Any]:
         "channels": {"whatsapp": bool(row.get("phone")), "email": bool(row.get("email"))},
         "whatsappSent": has_whatsapp_sent({"notes": row.get("notes") or ""}),
         "emailSent": has_email_sent({"notes": row.get("notes") or ""}),
+        "emailDeliveryStatus": row.get("email_delivery_status"),
+        "emailDeliveryError": row.get("email_delivery_error"),
+        "whatsappDeliveryStatus": row.get("whatsapp_delivery_status"),
+        "whatsappDeliveryError": row.get("whatsapp_delivery_error"),
     }
 
     # Ownership fields (from JOIN with users/companies or stored columns)
     if "admin_name" in row:
         result["admin_name"] = row.get("admin_name") or ""
+    if "owner_company_name" in row:
+        result["owner_company_name"] = row.get("owner_company_name") or ""
     if "user_name" in row:
         result["user_name"] = row.get("user_name") or ""
     if "created_by_user_id" in row:
@@ -255,10 +298,20 @@ def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
                 base_query = """
                     SELECT c.*,
                            COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
-                           COALESCE(comp.company_name, '') AS admin_name,
+                           COALESCE(
+                               NULLIF(TRIM(admin_u.first_name || ' ' || admin_u.last_name), ''),
+                               CASE
+                                   WHEN c.created_by_role = 'ADMIN'
+                                   THEN NULLIF(TRIM(u.first_name || ' ' || u.last_name), '')
+                                   ELSE ''
+                               END,
+                               ''
+                           ) AS admin_name,
+                           COALESCE(comp.company_name, '') AS owner_company_name,
                            COALESCE(c.owner_company_id, u.company_id) AS joined_owner_company_id
                     FROM contacts c
                     LEFT JOIN users u ON c.created_by_user_id = u.id
+                    LEFT JOIN users admin_u ON admin_u.id = u.admin_id
                     LEFT JOIN companies comp ON COALESCE(c.owner_company_id, u.company_id) = comp.id
                     WHERE (c.is_deleted = FALSE OR c.is_deleted IS NULL)
                 """
@@ -301,10 +354,20 @@ def get_contact(contact_id: str, user: dict[str, Any] | None = None) -> dict[str
                 query = """
                     SELECT c.*,
                            COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
-                           COALESCE(comp.company_name, '') AS admin_name,
+                           COALESCE(
+                               NULLIF(TRIM(admin_u.first_name || ' ' || admin_u.last_name), ''),
+                               CASE
+                                   WHEN c.created_by_role = 'ADMIN'
+                                   THEN NULLIF(TRIM(u.first_name || ' ' || u.last_name), '')
+                                   ELSE ''
+                               END,
+                               ''
+                           ) AS admin_name,
+                           COALESCE(comp.company_name, '') AS owner_company_name,
                            COALESCE(c.owner_company_id, u.company_id) AS joined_owner_company_id
                     FROM contacts c
                     LEFT JOIN users u ON c.created_by_user_id = u.id
+                    LEFT JOIN users admin_u ON admin_u.id = u.admin_id
                     LEFT JOIN companies comp ON COALESCE(c.owner_company_id, u.company_id) = comp.id
                     WHERE c.id = %s AND (c.is_deleted = FALSE OR c.is_deleted IS NULL)
                 """
@@ -438,7 +501,23 @@ def update_contact(contact_id: str, contact_data: dict[str, Any]) -> dict[str, A
     body = _payload_to_local_body(contact_data)
     try:
         with _connect() as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Preserve system delivery markers that live in notes so edits
+                # cannot wipe WhatsApp/email sent history.
+                cur.execute('SELECT notes FROM contacts WHERE id = %s', (contact_id,))
+                existing = cur.fetchone()
+                existing_notes = str((existing or {}).get("notes") or "")
+                markers = [
+                    marker
+                    for marker in (WHATSAPP_SENT_MARKER, EMAIL_SENT_MARKER)
+                    if marker in existing_notes
+                ]
+                notes = str(body["notes"] or "")
+                for marker in markers:
+                    if marker not in notes:
+                        notes = f"{notes}\n{marker}".strip() if notes else marker
+                body["notes"] = notes
+
                 cur.execute(
                     """
                     UPDATE contacts SET

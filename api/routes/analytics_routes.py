@@ -2,7 +2,7 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from auth.constants import ROLE_ADMIN, ROLE_SUPER_ADMIN
 from auth.dependencies import require_role
@@ -17,20 +17,21 @@ router = APIRouter(tags=["Analytics"])
 async def get_analytics_summary(
     user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN)),
 ):
-    """Return aggregated contact stats: total, synced, pending, failed, by company."""
+    """Return role-scoped contact, user, company, and event analytics."""
+    role = user.get("role", "")
+    company_id = user.get("company_id")
+    if role == ROLE_ADMIN and not company_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin account is not assigned to a company.",
+        )
+
     try:
         where_clause = "WHERE (c.is_deleted = FALSE OR c.is_deleted IS NULL)"
         params: list[Any] = []
 
-        role = user.get("role", "")
-        company_id = user.get("company_id")
-        user_id = user.get("id")
-
-        if role == "USER" and user_id:
-            where_clause += " AND c.created_by_user_id = %s"
-            params.append(user_id)
-        elif role == "ADMIN" and company_id:
-            where_clause += " AND u.company_id = %s"
+        if role == ROLE_ADMIN:
+            where_clause += " AND COALESCE(c.owner_company_id, u.company_id) = %s"
             params.append(company_id)
 
         with db_cursor(commit=False) as cur:
@@ -54,28 +55,96 @@ async def get_analytics_summary(
                     COUNT(*) AS count
                 FROM contacts c
                 LEFT JOIN users u ON c.created_by_user_id = u.id
-                LEFT JOIN companies comp ON u.company_id = comp.id
+                LEFT JOIN companies comp
+                    ON comp.id = COALESCE(c.owner_company_id, u.company_id)
                 {where_clause}
                 GROUP BY comp.company_name
                 ORDER BY count DESC
-                LIMIT 20
             """, params)
             by_company = [dict(row) for row in cur.fetchall()]
 
             cur.execute(f"""
                 SELECT
-                    COALESCE(u.first_name || ' ' || u.last_name, 'Unknown') AS user_name,
+                    u.id::text AS user_id,
+                    COALESCE(
+                        NULLIF(BTRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''),
+                        u.username,
+                        u.email,
+                        'Unknown'
+                    ) AS user_name,
+                    COALESCE(u.username, '') AS username,
+                    COALESCE(u.email, '') AS email,
+                    COALESCE(r.name, c.created_by_role, 'Unknown') AS role,
                     COALESCE(comp.company_name, 'Unassigned') AS company_name,
-                    COUNT(*) AS count
+                    COALESCE(
+                        NULLIF(BTRIM(CONCAT_WS(' ', admin_u.first_name, admin_u.last_name)), ''),
+                        admin_u.username,
+                        admin_u.email,
+                        ''
+                    ) AS admin_name,
+                    COUNT(*) AS count,
+                    COUNT(DISTINCT NULLIF(LOWER(BTRIM(c."eventName")), '')) AS event_count
                 FROM contacts c
                 LEFT JOIN users u ON c.created_by_user_id = u.id
-                LEFT JOIN companies comp ON u.company_id = comp.id
+                LEFT JOIN roles r ON u.role_id = r.id
+                LEFT JOIN companies comp
+                    ON comp.id = COALESCE(c.owner_company_id, u.company_id)
+                LEFT JOIN users admin_u
+                    ON admin_u.id = COALESCE(u.admin_id, comp.admin_id)
                 {where_clause}
-                GROUP BY u.first_name, u.last_name, comp.company_name
+                GROUP BY
+                    u.id, u.first_name, u.last_name, u.username, u.email,
+                    r.name, c.created_by_role, comp.company_name,
+                    admin_u.first_name, admin_u.last_name,
+                    admin_u.username, admin_u.email
                 ORDER BY count DESC
-                LIMIT 20
             """, params)
             by_user = [dict(row) for row in cur.fetchall()]
+
+            cur.execute(f"""
+                SELECT
+                    MIN(NULLIF(c."eventId", '')) AS event_id,
+                    MIN(BTRIM(c."eventName")) AS event_name,
+                    COALESCE(comp.company_name, 'Unassigned') AS company_name,
+                    COALESCE(
+                        NULLIF(BTRIM(CONCAT_WS(' ', admin_u.first_name, admin_u.last_name)), ''),
+                        admin_u.username,
+                        admin_u.email,
+                        ''
+                    ) AS admin_name,
+                    COUNT(*) AS contact_count,
+                    COUNT(DISTINCT c.created_by_user_id) AS user_count,
+                    COUNT(*) FILTER (WHERE c."syncStatus" = 'synced') AS synced,
+                    COUNT(*) FILTER (WHERE c."syncStatus" = 'failed') AS failed,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(c."syncStatus", 'synced') NOT IN ('synced', 'failed')
+                    ) AS pending,
+                    STRING_AGG(
+                        DISTINCT COALESCE(
+                            NULLIF(BTRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''),
+                            u.username,
+                            u.email,
+                            'Unknown'
+                        ),
+                        ', '
+                    ) AS contributors,
+                    MIN(c."createdAt") AS first_capture,
+                    MAX(c."createdAt") AS last_capture
+                FROM contacts c
+                LEFT JOIN users u ON c.created_by_user_id = u.id
+                LEFT JOIN companies comp
+                    ON comp.id = COALESCE(c.owner_company_id, u.company_id)
+                LEFT JOIN users admin_u ON admin_u.id = comp.admin_id
+                {where_clause}
+                  AND NULLIF(BTRIM(c."eventName"), '') IS NOT NULL
+                GROUP BY
+                    LOWER(BTRIM(c."eventName")),
+                    comp.id, comp.company_name,
+                    admin_u.first_name, admin_u.last_name,
+                    admin_u.username, admin_u.email
+                ORDER BY last_capture DESC
+            """, params)
+            by_event = [dict(row) for row in cur.fetchall()]
 
             cur.execute(f"""
                 SELECT
@@ -100,6 +169,7 @@ async def get_analytics_summary(
             "failed": int(totals.get("failed") or 0),
             "by_company": by_company,
             "by_user": by_user,
+            "by_event": by_event,
             "recent_activity": recent_activity,
         }
     except Exception as exc:
@@ -111,6 +181,7 @@ async def get_analytics_summary(
             "failed": 0,
             "by_company": [],
             "by_user": [],
+            "by_event": [],
             "recent_activity": [],
             "error": str(exc),
         }

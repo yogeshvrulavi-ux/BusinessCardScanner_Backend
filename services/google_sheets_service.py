@@ -226,7 +226,7 @@ def contact_to_row(contact: dict[str, Any], extras: dict[str, Any] | None = None
         str(contact.get("notes") or ""),
         str(contact.get("eventName") or ""),
         str(contact.get("owner_company_id") or contact.get("company_id") or ""),
-        str(contact.get("admin_name") or ""),
+        str(contact.get("owner_company_name") or contact.get("company") or ""),
         str(contact.get("user_name") or ""),
         str(contact.get("created_by_role") or ""),
         created[:10],

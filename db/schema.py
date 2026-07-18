@@ -205,7 +205,11 @@ SCHEMA_STATEMENTS: list[str] = [
         deleted_at          TIMESTAMPTZ,
         created_by_user_id  UUID REFERENCES users(id) ON DELETE SET NULL,
         owner_company_id    UUID REFERENCES companies(id) ON DELETE SET NULL,
-        created_by_role     VARCHAR(64) NOT NULL DEFAULT ''
+        created_by_role     VARCHAR(64) NOT NULL DEFAULT '',
+        email_delivery_status VARCHAR(32),
+        email_delivery_error  TEXT,
+        whatsapp_delivery_status VARCHAR(32),
+        whatsapp_delivery_error  TEXT
     );
     """,
     # ── Contacts: soft-delete columns (idempotent for older DBs) ───────────
@@ -285,6 +289,10 @@ SCHEMA_STATEMENTS: list[str] = [
     'ALTER TABLE contacts DROP COLUMN IF EXISTS "firebaseId";',
     'ALTER TABLE contacts DROP COLUMN IF EXISTS "zohoLeadId";',
     "ALTER TABLE contacts ALTER COLUMN \"syncStatus\" SET DEFAULT 'synced';",
+    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_delivery_status VARCHAR(32);",
+    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_delivery_error TEXT;",
+    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS whatsapp_delivery_status VARCHAR(32);",
+    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS whatsapp_delivery_error TEXT;",
     "CREATE INDEX IF NOT EXISTS idx_contacts_is_deleted ON contacts(is_deleted);",
     "CREATE INDEX IF NOT EXISTS idx_contacts_created_by ON contacts(created_by_user_id);",
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner_company ON contacts(owner_company_id);",

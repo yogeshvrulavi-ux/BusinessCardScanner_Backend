@@ -43,13 +43,29 @@ def list_users(
         conditions = ["u.deleted_at IS NULL"]
         params: list = []
 
-        if role != ROLE_SUPER_ADMIN:
+        if role == ROLE_SUPER_ADMIN:
+            # The User Management screen manages subordinate accounts; the
+            # system SuperAdmin account must not appear as a manageable user.
+            conditions.append("r.name <> %s")
+            params.append(ROLE_SUPER_ADMIN)
+        else:
             conditions.append("u.company_id = %s")
             params.append(company_id)
+            # Company Admins manage USER accounts only, not their own or other
+            # ADMIN identities in the same company.
+            conditions.append("r.name = 'USER'")
 
         where = " AND ".join(conditions)
 
-        cur.execute(f"SELECT COUNT(*) AS total FROM users u WHERE {where}", params)
+        cur.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM users u
+            JOIN roles r ON r.id = u.role_id
+            WHERE {where}
+            """,
+            params,
+        )
         total = cur.fetchone()["total"]
 
         cur.execute(

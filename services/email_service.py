@@ -771,8 +771,8 @@ async def schedule_email_for_contact(
         return skipped
 
     if not on_zoho_sync and not online_mode:
-        logger.info("Email auto-send skipped: offline mode (will send on Zoho sync).")
-        skipped["error"] = "Offline mode — email will send when you sync to Zoho."
+        logger.info("Email auto-send skipped: offline mode (will send after database sync).")
+        skipped["error"] = "Offline mode — email will send after the contact syncs to the database."
         return skipped
 
     if not is_email_configured():

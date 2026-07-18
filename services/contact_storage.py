@@ -111,6 +111,27 @@ def mark_email_sent(contact_id: str) -> None:
     local_db.mark_email_sent(contact_id)
 
 
+def update_outreach_delivery(
+    contact_id: str,
+    *,
+    email_status: str | None = None,
+    email_error: str | None = None,
+    whatsapp_status: str | None = None,
+    whatsapp_error: str | None = None,
+) -> None:
+    if is_client_side_storage():
+        return
+    from services import local_db_service as local_db
+
+    local_db.update_outreach_delivery(
+        contact_id,
+        email_status=email_status,
+        email_error=email_error,
+        whatsapp_status=whatsapp_status,
+        whatsapp_error=whatsapp_error,
+    )
+
+
 def has_whatsapp_sent(contact: dict[str, Any]) -> bool:
     from services import local_db_service as local_db
 

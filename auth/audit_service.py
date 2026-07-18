@@ -79,10 +79,12 @@ def get_logs(
     if conditions:
         where_clause = "WHERE " + " AND ".join(conditions)
 
-    # Join users table when company_id filter is used
-    join_clause = ""
-    if company_id:
-        join_clause = "LEFT JOIN users u ON u.id = al.user_id"
+    # Always join the actor so the UI can show a useful identity instead of a
+    # UUID. IP and user-agent remain stored internally for security analysis.
+    join_clause = """
+        LEFT JOIN users u ON u.id = al.user_id
+        LEFT JOIN roles r ON r.id = u.role_id
+    """
 
     offset = (page - 1) * limit
 
@@ -98,7 +100,11 @@ def get_logs(
         cur.execute(
             f"""
             SELECT al.id, al.user_id, al.action, al.ip, al.browser, al.user_agent,
-                   al.old_value, al.new_value, al.created_at
+                   al.old_value, al.new_value, al.created_at,
+                   TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS actor_name,
+                   u.username AS actor_username,
+                   u.email AS actor_email,
+                   r.name AS actor_role
             FROM audit_logs al
             {join_clause}
             {where_clause}
