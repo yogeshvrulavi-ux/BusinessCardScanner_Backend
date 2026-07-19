@@ -293,6 +293,7 @@ SCHEMA_STATEMENTS: list[str] = [
     "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_delivery_error TEXT;",
     "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS whatsapp_delivery_status VARCHAR(32);",
     "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS whatsapp_delivery_error TEXT;",
+    'ALTER TABLE contacts ADD COLUMN IF NOT EXISTS "cardImageBase64" TEXT;',
     "CREATE INDEX IF NOT EXISTS idx_contacts_is_deleted ON contacts(is_deleted);",
     "CREATE INDEX IF NOT EXISTS idx_contacts_created_by ON contacts(created_by_user_id);",
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner_company ON contacts(owner_company_id);",
