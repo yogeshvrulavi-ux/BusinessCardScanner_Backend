@@ -281,12 +281,48 @@ def infer_name_from_email(email: str) -> str:
     return ""
 
 
+# Indian states/regions frequently printed on cards (service areas, addresses).
+# These are never a person's name, so exclude them from name candidates.
+INDIAN_REGIONS = {
+    "himachal", "himachal pradesh", "rajasthan", "uttrakhand", "uttarakhand",
+    "uttar pradesh", "madhya pradesh", "andhra pradesh", "arunachal pradesh",
+    "jammu", "kashmir", "jammu kashmir", "jammu and kashmir", "jammu & kashmir",
+    "kerala", "goa", "punjab", "haryana", "bihar", "gujarat", "maharashtra",
+    "karnataka", "tamil nadu", "telangana", "west bengal", "odisha", "assam",
+    "sikkim", "ladakh", "delhi", "new delhi", "chhattisgarh", "jharkhand",
+    "manipur", "meghalaya", "mizoram", "nagaland", "tripura", "india",
+}
+
+
+def _score_name_candidate(line: str) -> int:
+    """Score how likely a line is a person's name (higher = more likely)."""
+    if not is_likely_name_line(line):
+        return -100
+    lower_line = line.lower().strip()
+    if lower_line in INDIAN_REGIONS:
+        return -100
+    if any(re.search(r'\b' + re.escape(suffix) + r'\b', lower_line) for suffix in COMPANY_SUFFIXES):
+        return -100
+    if any(re.search(r'\b' + re.escape(title) + r'\b', lower_line) for title in COMMON_TITLES):
+        return -100
+    words = line.split()
+    score = 0
+    # Person names are usually 2-4 words; single words are weak candidates
+    # (often place names, headings, or logo fragments).
+    if 2 <= len(words) <= 4:
+        score += 40
+    elif len(words) == 1:
+        score += 5
+    if all(re.match(r"^[A-Z][a-z'.\-]+$", w) or (len(w) >= 2 and w.isupper()) for w in words):
+        score += 25
+    return score
+
+
 def extract_name_and_designation(lines: List[str]) -> tuple[str, str, List[str]]:
     """Identify the person's name and designation using heuristics."""
     name = ""
     designation = ""
-    remaining_lines = []
-    
+
     # 1. First, look for a designation line matching COMMON_TITLES
     designation_idx = -1
     for i, line in enumerate(lines):
@@ -298,35 +334,30 @@ def extract_name_and_designation(lines: List[str]) -> tuple[str, str, List[str]]
                 break
         if designation:
             break
-            
-    # 2. Look for name
-    # Heuristic A: If designation is found, name is often the line immediately preceding it
-    if designation and designation_idx > 0:
-        prev_line = lines[designation_idx - 1]
-        # Ensure the previous line is not a company name
-        if not any(suffix in prev_line.lower() for suffix in COMPANY_SUFFIXES):
-            # And looks like a name (no numbers, reasonable length)
-            words = prev_line.split()
-            if 1 <= len(words) <= 5 and is_likely_name_line(prev_line):
-                name = prev_line
 
-    # Heuristic B: first line that looks like a person name
-    if not name:
-        for line in lines:
-            if line == designation:
-                continue
-            if is_likely_name_line(line) and not any(
-                suffix in line.lower() for suffix in COMPANY_SUFFIXES
-            ):
-                name = line
-                break
-                        
-    # Re-build remaining lines excluding matched name and designation
-    for line in lines:
-        if line == name or line == designation:
+    # 2. Pick the best-scoring name candidate across all lines instead of
+    # blindly taking the line before the designation (which can be a stray
+    # place name or heading from another column of the card).
+    best_score = 0
+    for i, line in enumerate(lines):
+        if i == designation_idx:
             continue
-        remaining_lines.append(line)
-        
+        score = _score_name_candidate(line)
+        if score <= 0:
+            continue
+        # Names usually sit directly above the title line — small bonus only,
+        # so a proper multi-word name elsewhere still wins over a single word.
+        if designation_idx > 0 and i == designation_idx - 1:
+            score += 30
+        if score > best_score:
+            best_score = score
+            name = line
+
+    # Re-build remaining lines excluding matched name and designation
+    remaining_lines = [
+        line for line in lines if line != name and line != designation
+    ]
+
     return name, designation, remaining_lines
 
 def extract_address(lines: List[str]) -> tuple[str, List[str]]:

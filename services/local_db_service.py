@@ -219,6 +219,8 @@ def _row_to_contact(row: dict[str, Any]) -> dict[str, Any]:
         result["owner_company_name"] = row.get("owner_company_name") or ""
     if "user_name" in row:
         result["user_name"] = row.get("user_name") or ""
+    if "user_username" in row:
+        result["user_username"] = row.get("user_username") or ""
     if "created_by_user_id" in row:
         result["created_by_user_id"] = str(row.get("created_by_user_id") or "")
     owner_company = row.get("owner_company_id")
@@ -298,6 +300,7 @@ def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
                 base_query = """
                     SELECT c.*,
                            COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
+                           COALESCE(u.username, '') AS user_username,
                            COALESCE(
                                NULLIF(TRIM(admin_u.first_name || ' ' || admin_u.last_name), ''),
                                CASE
@@ -354,6 +357,7 @@ def get_contact(contact_id: str, user: dict[str, Any] | None = None) -> dict[str
                 query = """
                     SELECT c.*,
                            COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
+                           COALESCE(u.username, '') AS user_username,
                            COALESCE(
                                NULLIF(TRIM(admin_u.first_name || ' ' || admin_u.last_name), ''),
                                CASE

@@ -2,9 +2,9 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 
-from auth.constants import ROLE_ADMIN, ROLE_SUPER_ADMIN
+from auth.constants import ROLE_SUPER_ADMIN
 from auth.dependencies import require_role
 from db.pool import db_cursor
 
@@ -15,24 +15,12 @@ router = APIRouter(tags=["Analytics"])
 
 @router.get("/api/analytics/summary")
 async def get_analytics_summary(
-    user: dict = Depends(require_role(ROLE_SUPER_ADMIN, ROLE_ADMIN)),
+    user: dict = Depends(require_role(ROLE_SUPER_ADMIN)),
 ):
-    """Return role-scoped contact, user, company, and event analytics."""
-    role = user.get("role", "")
-    company_id = user.get("company_id")
-    if role == ROLE_ADMIN and not company_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin account is not assigned to a company.",
-        )
-
+    """Return system-wide contact, user, company, and event analytics."""
     try:
         where_clause = "WHERE (c.is_deleted = FALSE OR c.is_deleted IS NULL)"
         params: list[Any] = []
-
-        if role == ROLE_ADMIN:
-            where_clause += " AND COALESCE(c.owner_company_id, u.company_id) = %s"
-            params.append(company_id)
 
         with db_cursor(commit=False) as cur:
             cur.execute(f"""
