@@ -40,6 +40,21 @@ def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     return local_db.list_contacts(user=user)
 
 
+def list_contacts_page(
+    user: dict[str, Any] | None = None,
+    *,
+    page: int = 1,
+    limit: int = 10,
+    q: str | None = None,
+    event: str | None = None,
+) -> dict[str, Any]:
+    if is_client_side_storage():
+        return {"items": [], "total": 0, "page": page, "limit": limit}
+    from services import local_db_service as local_db
+
+    return local_db.list_contacts_page(user=user, page=page, limit=limit, q=q, event=event)
+
+
 def get_contact(contact_id: str, user: dict[str, Any] | None = None) -> dict[str, Any] | None:
     if is_client_side_storage():
         return None

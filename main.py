@@ -112,7 +112,6 @@ app = FastAPI(
         {"name": "Integrations", "description": "WhatsApp and email queue integrations"},
         {"name": "Webhooks", "description": "Meta WhatsApp webhook verification and events"},
         {"name": "Admin", "description": "Destructive admin operations (wipe data)"},
-        {"name": "Analytics", "description": "Contact insights for Admin/SuperAdmin"},
     ],
 )
 

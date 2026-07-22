@@ -27,10 +27,14 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import jwt
 import requests
+
+# Backend package root (…/BusinessCardScanner_Backend)
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +103,33 @@ def _sheet_name() -> str:
     return os.getenv("GOOGLE_SHEET_NAME", "").strip() or "Contacts"
 
 
+def _resolve_service_account_path(raw: str) -> Path | None:
+    """Resolve a credentials file path for local Windows and EC2 Linux layouts."""
+    candidates: list[Path] = [Path(raw)]
+    if not Path(raw).is_absolute():
+        candidates.append(_BACKEND_ROOT / raw)
+        candidates.append(_BACKEND_ROOT / "secrets" / Path(raw).name)
+        candidates.append(Path.cwd() / raw)
+        candidates.append(Path.cwd() / "secrets" / Path(raw).name)
+    # If someone pasted a Windows path on Linux, also try secrets/<filename>
+    name = Path(raw.replace("\\", "/")).name
+    if name.lower().endswith(".json"):
+        candidates.append(_BACKEND_ROOT / "secrets" / name)
+
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
 def _load_service_account() -> dict[str, Any] | None:
     raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if not raw:
@@ -106,17 +137,28 @@ def _load_service_account() -> dict[str, Any] | None:
     try:
         if raw.startswith("{"):
             return json.loads(raw)
-        if os.path.isfile(raw):
-            with open(raw, encoding="utf-8") as handle:
+        resolved = _resolve_service_account_path(raw)
+        if resolved is not None:
+            with resolved.open(encoding="utf-8") as handle:
                 return json.load(handle)
-        logger.warning("GOOGLE_SERVICE_ACCOUNT_JSON is neither JSON nor an existing file path.")
+        logger.warning(
+            "GOOGLE_SERVICE_ACCOUNT_JSON path not found (%s). "
+            "On EC2 put the JSON under secrets/ and set "
+            "GOOGLE_SERVICE_ACCOUNT_JSON=secrets/<filename>.json",
+            raw,
+        )
     except Exception as exc:
         logger.warning("Could not load Google service account credentials: %s", exc)
     return None
 
 
 def is_sheets_configured() -> bool:
-    return bool(_sheet_id() and os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip())
+    raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    if not _sheet_id() or not raw:
+        return False
+    if raw.startswith("{"):
+        return True
+    return _resolve_service_account_path(raw) is not None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

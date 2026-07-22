@@ -297,47 +297,7 @@ def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     try:
         with _connect() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                base_query = """
-                    SELECT c.*,
-                           COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
-                           COALESCE(u.username, '') AS user_username,
-                           COALESCE(
-                               NULLIF(TRIM(admin_u.first_name || ' ' || admin_u.last_name), ''),
-                               CASE
-                                   WHEN c.created_by_role = 'ADMIN'
-                                   THEN NULLIF(TRIM(u.first_name || ' ' || u.last_name), '')
-                                   ELSE ''
-                               END,
-                               ''
-                           ) AS admin_name,
-                           COALESCE(comp.company_name, '') AS owner_company_name,
-                           COALESCE(c.owner_company_id, u.company_id) AS joined_owner_company_id
-                    FROM contacts c
-                    LEFT JOIN users u ON c.created_by_user_id = u.id
-                    LEFT JOIN users admin_u ON admin_u.id = u.admin_id
-                    LEFT JOIN companies comp ON COALESCE(c.owner_company_id, u.company_id) = comp.id
-                    WHERE (c.is_deleted = FALSE OR c.is_deleted IS NULL)
-                """
-                params: list[Any] = []
-
-                # RBAC: scope contacts by role
-                if user:
-                    role = user.get("role", "")
-                    company_id = user.get("company_id")
-                    user_id = user.get("id")
-                    if role == "USER" and user_id:
-                        base_query += " AND c.created_by_user_id = %s"
-                        params.append(user_id)
-                    elif role == "ADMIN":
-                        if company_id:
-                            base_query += " AND COALESCE(c.owner_company_id, u.company_id) = %s"
-                            params.append(company_id)
-                        elif user_id:
-                            # Harden: Admin without company only sees their own contacts.
-                            base_query += " AND c.created_by_user_id = %s"
-                            params.append(user_id)
-                    # SUPER_ADMIN sees all
-
+                base_query, params = _contacts_list_sql(user)
                 base_query += ' ORDER BY c."createdAt" DESC'
                 cur.execute(base_query, params)
                 rows = cur.fetchall()
@@ -347,6 +307,117 @@ def list_contacts(user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     except Exception as exc:
         logger.error("PostgreSQL list failed: %s", exc)
         return []
+
+
+def list_contacts_page(
+    user: dict[str, Any] | None = None,
+    *,
+    page: int = 1,
+    limit: int = 10,
+    q: str | None = None,
+    event: str | None = None,
+) -> dict[str, Any]:
+    """Paginated contacts list — same RBAC as list_contacts, with optional search."""
+    page = max(1, int(page or 1))
+    limit = min(100, max(1, int(limit or 10)))
+    offset = (page - 1) * limit
+    try:
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                base_query, params = _contacts_list_sql(user, q=q, event=event)
+                count_query = f"SELECT COUNT(*) AS count FROM ({base_query}) AS scoped"
+                cur.execute(count_query, params)
+                total = int(cur.fetchone()["count"])
+
+                page_query = base_query + ' ORDER BY c."createdAt" DESC LIMIT %s OFFSET %s'
+                cur.execute(page_query, params + [limit, offset])
+                rows = cur.fetchall()
+        return {
+            "items": [_row_to_contact(dict(row)) for row in rows],
+            "total": total,
+            "page": page,
+            "limit": limit,
+        }
+    except LocalDbError:
+        raise
+    except Exception as exc:
+        logger.error("PostgreSQL paged list failed: %s", exc)
+        return {"items": [], "total": 0, "page": page, "limit": limit}
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so user input is matched literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _contacts_list_sql(
+    user: dict[str, Any] | None = None,
+    *,
+    q: str | None = None,
+    event: str | None = None,
+) -> tuple[str, list[Any]]:
+    base_query = """
+        SELECT c.*,
+               COALESCE(u.first_name || ' ' || u.last_name, '') AS user_name,
+               COALESCE(u.username, '') AS user_username,
+               COALESCE(
+                   NULLIF(TRIM(admin_u.first_name || ' ' || admin_u.last_name), ''),
+                   CASE
+                       WHEN c.created_by_role = 'ADMIN'
+                       THEN NULLIF(TRIM(u.first_name || ' ' || u.last_name), '')
+                       ELSE ''
+                   END,
+                   ''
+               ) AS admin_name,
+               COALESCE(comp.company_name, '') AS owner_company_name,
+               COALESCE(c.owner_company_id, u.company_id) AS joined_owner_company_id
+        FROM contacts c
+        LEFT JOIN users u ON c.created_by_user_id = u.id
+        LEFT JOIN users admin_u ON admin_u.id = u.admin_id
+        LEFT JOIN companies comp ON COALESCE(c.owner_company_id, u.company_id) = comp.id
+        WHERE (c.is_deleted = FALSE OR c.is_deleted IS NULL)
+    """
+    params: list[Any] = []
+
+    if user:
+        role = user.get("role", "")
+        company_id = user.get("company_id")
+        user_id = user.get("id")
+        if role == "USER" and user_id:
+            base_query += " AND c.created_by_user_id = %s"
+            params.append(user_id)
+        elif role == "ADMIN":
+            if company_id:
+                base_query += " AND COALESCE(c.owner_company_id, u.company_id) = %s"
+                params.append(company_id)
+            elif user_id:
+                base_query += " AND c.created_by_user_id = %s"
+                params.append(user_id)
+
+    search = (q or "").strip()
+    if search:
+        like = f"%{_escape_like(search)}%"
+        base_query += """
+            AND (
+                COALESCE(c."fullName", '') ILIKE %s ESCAPE '\\'
+                OR COALESCE(c.company, '') ILIKE %s ESCAPE '\\'
+                OR COALESCE(c.email, '') ILIKE %s ESCAPE '\\'
+                OR COALESCE(c.phone, '') ILIKE %s ESCAPE '\\'
+                OR COALESCE(c."secondaryPhone", '') ILIKE %s ESCAPE '\\'
+                OR COALESCE(c."secondaryEmail", '') ILIKE %s ESCAPE '\\'
+                OR COALESCE(c."eventName", '') ILIKE %s ESCAPE '\\'
+                OR COALESCE(c.designation, '') ILIKE %s ESCAPE '\\'
+                OR COALESCE(c.notes, '') ILIKE %s ESCAPE '\\'
+            )
+        """
+        params.extend([like] * 9)
+
+    event_name = (event or "").strip()
+    if event_name:
+        base_query += ' AND LOWER(TRIM(COALESCE(c."eventName", \'\'))) = LOWER(TRIM(%s))'
+        params.append(event_name)
+
+    return base_query, params
 
 
 def get_contact(contact_id: str, user: dict[str, Any] | None = None) -> dict[str, Any] | None:

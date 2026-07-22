@@ -107,10 +107,12 @@ def invite_user(body: InviteRequest, request: Request):
 def get_invitations(
     request: Request,
     status: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=200),
 ):
     actor = get_current_user(request)
     try:
-        return list_invitations(actor, status=status)
+        return list_invitations(actor, status=status, page=page, limit=limit)
     except InvitationError as exc:
         _raise(exc)
 

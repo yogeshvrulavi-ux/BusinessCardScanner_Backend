@@ -247,7 +247,17 @@ def create_invitation(
     return result
 
 
-def list_invitations(actor: dict[str, Any], *, status: str | None = None) -> dict[str, Any]:
+def list_invitations(
+    actor: dict[str, Any],
+    *,
+    status: str | None = None,
+    page: int = 1,
+    limit: int = 10,
+) -> dict[str, Any]:
+    page = max(1, int(page or 1))
+    limit = min(200, max(1, int(limit or 10)))
+    offset = (page - 1) * limit
+
     with db_cursor(commit=True) as cur:
         _expire_stale(cur)
         conditions = ["1=1"]
@@ -267,6 +277,12 @@ def list_invitations(actor: dict[str, Any], *, status: str | None = None) -> dic
 
         where = " AND ".join(conditions)
         cur.execute(
+            f"SELECT COUNT(*) AS count FROM invitations i WHERE {where}",
+            params,
+        )
+        total = int(cur.fetchone()["count"])
+
+        cur.execute(
             f"""
             SELECT i.*,
                    COALESCE(u.first_name || ' ' || u.last_name, u.email) AS inviter_name
@@ -274,13 +290,18 @@ def list_invitations(actor: dict[str, Any], *, status: str | None = None) -> dic
             JOIN users u ON u.id = i.invited_by
             WHERE {where}
             ORDER BY i.created_at DESC
-            LIMIT 200
+            LIMIT %s OFFSET %s
             """,
-            params,
+            params + [limit, offset],
         )
         rows = cur.fetchall()
 
-    return {"items": [_serialize_invite(dict(r)) for r in rows], "total": len(rows)}
+    return {
+        "items": [_serialize_invite(dict(r)) for r in rows],
+        "total": total,
+        "page": page,
+        "limit": limit,
+    }
 
 
 def resend_invitation(

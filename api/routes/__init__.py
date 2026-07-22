@@ -1,7 +1,6 @@
 from fastapi import APIRouter
 
 from api.routes.admin import router as admin_router
-from api.routes.analytics_routes import router as analytics_router
 from api.routes.auth_password_reset import router as auth_password_reset_router
 from api.routes.auth_routes import router as auth_router
 from api.routes.audit_routes import router as audit_router
@@ -29,7 +28,6 @@ def build_api_router() -> APIRouter:
     root.include_router(session_router)
     root.include_router(profile_router)
     root.include_router(audit_router)
-    root.include_router(analytics_router)
     root.include_router(invitation_router)
     root.include_router(offline_queue_router)
     return root

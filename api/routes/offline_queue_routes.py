@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from psycopg2.extras import Json
 
@@ -90,7 +90,11 @@ def report_queue_snapshot(
 
 
 @router.get("", summary="List role-scoped Offline Queue records")
-def list_offline_queue(user: dict = Depends(get_current_user)):
+def list_offline_queue(
+    user: dict = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=200),
+):
     """SuperAdmin sees all; Admin sees company; User sees their own."""
     role = str(user.get("role") or "")
     conditions: list[str] = []
@@ -114,7 +118,14 @@ def list_offline_queue(user: dict = Depends(get_current_user)):
         params.append(user["id"])
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    offset = (page - 1) * limit
     with db_cursor(commit=False) as cur:
+        cur.execute(
+            f"SELECT COUNT(*) AS count FROM offline_queue_records oq {where_clause}",
+            params,
+        )
+        total = int(cur.fetchone()["count"])
+
         cur.execute(
             f"""
             SELECT oq.queue_id, oq.status, oq.retry_count, oq.contact_data,
@@ -129,8 +140,9 @@ def list_offline_queue(user: dict = Depends(get_current_user)):
             LEFT JOIN companies comp ON comp.id = oq.owner_company_id
             {where_clause}
             ORDER BY oq.queued_at DESC
+            LIMIT %s OFFSET %s
             """,
-            params,
+            params + [limit, offset],
         )
         rows = [dict(row) for row in cur.fetchall()]
 
@@ -141,4 +153,4 @@ def list_offline_queue(user: dict = Depends(get_current_user)):
         for key in ("created_by_user_id", "owner_company_id"):
             if row.get(key) is not None:
                 row[key] = str(row[key])
-    return {"items": rows, "total": len(rows)}
+    return {"items": rows, "total": total, "page": page, "limit": limit}

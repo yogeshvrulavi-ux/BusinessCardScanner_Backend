@@ -2,7 +2,7 @@ import json
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
 from api.auth_context import get_scanner_email_from_request
 from api.outreach import (
@@ -122,7 +122,21 @@ async def create_contact(
 
 
 @router.get("/contacts", summary="List all local database contacts")
-async def fetch_contacts(user: dict = Depends(get_current_user)):
+async def fetch_contacts(
+    user: dict = Depends(get_current_user),
+    page: int | None = Query(None, ge=1),
+    limit: int | None = Query(None, ge=1, le=100),
+    q: str | None = Query(None, max_length=200),
+    event: str | None = Query(None, max_length=200),
+):
+    if page is not None or limit is not None or q or event:
+        return storage.list_contacts_page(
+            user=user,
+            page=page or 1,
+            limit=limit or 10,
+            q=q,
+            event=event,
+        )
     return storage.list_contacts(user=user)
 
 
@@ -137,7 +151,21 @@ async def storage_config(_user: dict = Depends(get_current_user)):
 
 
 @router.get("/api/contacts", summary="List contacts (UI shape)")
-async def list_contacts_api(user: dict = Depends(get_current_user)):
+async def list_contacts_api(
+    user: dict = Depends(get_current_user),
+    page: int | None = Query(None, ge=1),
+    limit: int | None = Query(None, ge=1, le=100),
+    q: str | None = Query(None, max_length=200),
+    event: str | None = Query(None, max_length=200),
+):
+    if page is not None or limit is not None or q or event:
+        return storage.list_contacts_page(
+            user=user,
+            page=page or 1,
+            limit=limit or 10,
+            q=q,
+            event=event,
+        )
     return storage.list_contacts(user=user)
 
 

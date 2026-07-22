@@ -72,11 +72,33 @@ def list_users(
             f"""
             SELECT u.id, u.email, u.first_name, u.last_name, u.username, u.phone,
                    u.is_active, u.is_verified, u.company_id, u.admin_id,
-                   u.last_login, u.created_at, u.updated_at, r.name AS role
+                   u.last_login, u.created_at, u.updated_at, r.name AS role,
+                   COALESCE(comp.company_name, '') AS company_name,
+                   COALESCE(NULLIF(TRIM(admin_u.first_name || ' ' || admin_u.last_name), ''), '') AS admin_name,
+                   COALESCE(admin_u.email, '') AS admin_email,
+                   CASE
+                     WHEN r.name = 'ADMIN' THEN (
+                       SELECT COUNT(*)::int
+                       FROM users sub
+                       JOIN roles sr ON sr.id = sub.role_id
+                       WHERE sub.deleted_at IS NULL
+                         AND sr.name = 'USER'
+                         AND (
+                           sub.admin_id = u.id
+                           OR (sub.company_id IS NOT NULL AND sub.company_id = u.company_id)
+                         )
+                     )
+                     ELSE 0
+                   END AS user_count
             FROM users u
             JOIN roles r ON r.id = u.role_id
+            LEFT JOIN companies comp ON comp.id = u.company_id
+            LEFT JOIN users admin_u ON admin_u.id = u.admin_id AND admin_u.deleted_at IS NULL
             WHERE {where}
-            ORDER BY u.created_at DESC
+            ORDER BY
+              CASE r.name WHEN 'ADMIN' THEN 0 WHEN 'USER' THEN 1 ELSE 2 END,
+              comp.company_name ASC NULLS LAST,
+              u.created_at DESC
             LIMIT %s OFFSET %s
             """,
             params + [limit, offset],

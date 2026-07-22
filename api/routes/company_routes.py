@@ -34,9 +34,23 @@ def list_companies(page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=2
         total = cur.fetchone()["total"]
         cur.execute(
             """
-            SELECT id, company_name, company_code, admin_id, address, phone, email, website,
-                   status, created_at, updated_at
-            FROM companies ORDER BY created_at DESC LIMIT %s OFFSET %s
+            SELECT c.id, c.company_name, c.company_code, c.admin_id, c.address, c.phone, c.email,
+                   c.website, c.status, c.created_at, c.updated_at,
+                   COALESCE(NULLIF(TRIM(a.first_name || ' ' || a.last_name), ''), '') AS admin_name,
+                   COALESCE(a.email, '') AS admin_email,
+                   COALESCE(a.username, '') AS admin_username,
+                   (
+                     SELECT COUNT(*)::int
+                     FROM users u
+                     JOIN roles r ON r.id = u.role_id
+                     WHERE u.company_id = c.id
+                       AND u.deleted_at IS NULL
+                       AND r.name = 'USER'
+                   ) AS user_count
+            FROM companies c
+            LEFT JOIN users a ON a.id = c.admin_id AND a.deleted_at IS NULL
+            ORDER BY c.created_at DESC
+            LIMIT %s OFFSET %s
             """,
             (limit, offset),
         )
