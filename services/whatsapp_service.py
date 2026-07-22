@@ -483,7 +483,7 @@ def build_scan_thank_you_text(
     title_bit = f" ({designation})" if designation else ""
     return (
         f"Hi {first_name}, thank you for sharing your business card{company_bit}{title_bit}. "
-        "We have saved your details in CardSync."
+        "We have saved your details in NameCardScan."
     )
 
 

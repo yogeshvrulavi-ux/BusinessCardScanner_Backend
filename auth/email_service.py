@@ -52,11 +52,11 @@ def _frontend_base(explicit: str | None = None) -> str:
 
 
 def send_welcome_email(to_email: str, full_name: str) -> dict:
-    subject = "Welcome to CardSync AI"
+    subject = "Welcome to NameCardScan"
     html = f"""
     <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
       <h2 style="color: #0891b2;">Welcome, {full_name}!</h2>
-      <p>Your CardSync AI account has been created successfully.</p>
+      <p>Your NameCardScan account has been created successfully.</p>
       <p>You can now log in and start managing your contacts and CRM leads.</p>
       <hr style="border: none; border-top: 1px solid #e2e8f0;" />
       <p style="color: #64748b; font-size: 12px;">If you did not expect this email, please ignore it.</p>
@@ -66,7 +66,7 @@ def send_welcome_email(to_email: str, full_name: str) -> dict:
 
 
 def send_forgot_password_otp(to_email: str, otp_code: str) -> dict:
-    subject = "CardSync AI — Password Reset Code"
+    subject = "NameCardScan — Password Reset Code"
     html = f"""
     <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
       <h2 style="color: #0891b2;">Password Reset Code</h2>
@@ -87,7 +87,7 @@ def send_email_verification(to_email: str, token: str, frontend_url: str | None 
         logger.error("Cannot build verification link: %s", exc)
         return {"sent": False, "error": str(exc)}
     verify_link = f"{base}/verify-email?token={token}"
-    subject = "Verify your CardSync AI email"
+    subject = "Verify your NameCardScan email"
     html = f"""
     <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
       <h2 style="color: #0891b2;">Verify Your Email</h2>
@@ -110,7 +110,7 @@ def send_email_change_verification(to_email: str, token: str, frontend_url: str 
         logger.error("Cannot build email-change link: %s", exc)
         return {"sent": False, "error": str(exc)}
     verify_link = f"{base}/verify-email-change?token={token}"
-    subject = "CardSync AI — Confirm Email Change"
+    subject = "NameCardScan — Confirm Email Change"
     html = f"""
     <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
       <h2 style="color: #0891b2;">Confirm Email Change</h2>
@@ -143,7 +143,7 @@ def send_invitation_email(
         return {"sent": False, "error": str(exc)}
     register_link = f"{base}/register?token={raw_token}"
     role_label = "Admin" if role == "ADMIN" else "User" if role == "USER" else role
-    subject = f"You're invited to join {organization_name} on CardSync AI"
+    subject = f"You're invited to join {organization_name} on NameCardScan"
     html = f"""
     <div style="font-family: sans-serif; max-width: 520px; margin: auto; color: #1e293b;">
       <h2 style="color: #0891b2;">You're invited</h2>

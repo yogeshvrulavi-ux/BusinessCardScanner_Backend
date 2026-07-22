@@ -2,7 +2,7 @@
 import os
 import re
 
-APP_TITLE = "CardSync AI API"
+APP_TITLE = "NameCardScan API"
 APP_VERSION = "1.0.0"
 APP_DESCRIPTION = (
     "Business card scanner with PostgreSQL contact management, "

@@ -10,6 +10,7 @@ from api.routes.contacts import router as contacts_router
 from api.routes.integrations import router as integrations_router
 from api.routes.invitation_routes import router as invitation_router
 from api.routes.ocr import router as ocr_router
+from api.routes.offline_queue_routes import router as offline_queue_router
 from api.routes.profile_routes import router as profile_router
 from api.routes.session_routes import router as session_router
 from api.routes.user_routes import router as user_router
@@ -30,4 +31,5 @@ def build_api_router() -> APIRouter:
     root.include_router(audit_router)
     root.include_router(analytics_router)
     root.include_router(invitation_router)
+    root.include_router(offline_queue_router)
     return root

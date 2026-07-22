@@ -73,7 +73,7 @@ SMTP_PORT = int(_normalize_env(os.getenv("SMTP_PORT")) or str(DEFAULT_SMTP_PORT)
 SMTP_USER = _normalize_env(os.getenv("SMTP_USER")) or GMAIL_USER
 SMTP_PASSWORD = _normalize_gmail_app_password(os.getenv("SMTP_PASSWORD")) or GMAIL_APP_PASSWORD
 
-BUSINESS_COMPANY_NAME = _normalize_env(os.getenv("BUSINESS_COMPANY_NAME")) or "CardSync"
+BUSINESS_COMPANY_NAME = _normalize_env(os.getenv("BUSINESS_COMPANY_NAME")) or "NameCardScan"
 BUSINESS_PHONE = _normalize_env(os.getenv("BUSINESS_PHONE")) or ""
 BUSINESS_WEBSITE = _normalize_env(os.getenv("BUSINESS_WEBSITE")) or ""
 BUSINESS_EMAIL = _normalize_env(os.getenv("BUSINESS_EMAIL")) or SMTP_USER

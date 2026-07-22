@@ -85,6 +85,25 @@ SCHEMA_STATEMENTS: list[str] = [
         deleted_at             TIMESTAMPTZ
     );
     """,
+    # ── Offline queue registry ─────────────────────────────────────────────
+    # IndexedDB remains the source of truth for synchronization. This table is
+    # a best-effort online mirror so SuperAdmin can inspect queues platform-wide.
+    """
+    CREATE TABLE IF NOT EXISTS offline_queue_records (
+        id                  BIGSERIAL PRIMARY KEY,
+        queue_id            VARCHAR(128) NOT NULL,
+        created_by_user_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        owner_company_id    UUID REFERENCES companies(id) ON DELETE SET NULL,
+        status              VARCHAR(32) NOT NULL DEFAULT 'pending',
+        retry_count         INTEGER NOT NULL DEFAULT 0,
+        contact_data        JSONB NOT NULL DEFAULT '{}'::jsonb,
+        error_message       TEXT,
+        queued_at           TIMESTAMPTZ NOT NULL,
+        last_attempt        TIMESTAMPTZ,
+        reported_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (queue_id, created_by_user_id)
+    );
+    """,
     # FK from companies.admin_id → users.id (added after both tables exist)
     """
     DO $$
@@ -170,6 +189,9 @@ SCHEMA_STATEMENTS: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_users_email        ON users(email);",
     "CREATE INDEX IF NOT EXISTS idx_users_username     ON users(username);",
     "CREATE INDEX IF NOT EXISTS idx_users_company_id   ON users(company_id);",
+    "CREATE INDEX IF NOT EXISTS idx_offline_queue_user ON offline_queue_records(created_by_user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_offline_queue_company ON offline_queue_records(owner_company_id);",
+    "CREATE INDEX IF NOT EXISTS idx_offline_queue_status ON offline_queue_records(status);",
     "CREATE INDEX IF NOT EXISTS idx_users_role_id      ON users(role_id);",
     "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_sessions_user       ON sessions(user_id);",

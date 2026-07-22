@@ -213,8 +213,8 @@ def create_invitation(
         )
         row = dict(cur.fetchone())
 
-    inviter_name = str(row.get("inviter_name") or "CardSync").strip()
-    org_name = (company_name or "").strip() or "CardSync AI"
+    inviter_name = str(row.get("inviter_name") or "NameCardScan").strip()
+    org_name = (company_name or "").strip() or "NameCardScan"
     send_invitation_email(
         to_email=email,
         inviter_name=inviter_name,
@@ -332,9 +332,9 @@ def resend_invitation(
 
     send_invitation_email(
         to_email=row["email"],
-        inviter_name=str((inviter or {}).get("inviter_name") or "CardSync"),
+        inviter_name=str((inviter or {}).get("inviter_name") or "NameCardScan"),
         role=row["role"],
-        organization_name=str(row.get("company_name") or "CardSync AI"),
+        organization_name=str(row.get("company_name") or "NameCardScan"),
         raw_token=raw_token,
         expires_hours=INVITATION_EXPIRE_HOURS,
     )

@@ -45,6 +45,10 @@ def log_action(
         logger.warning("Failed to write audit log (%s): %s", action, exc)
 
 
+# Internal bookkeeping events that only add noise to the audit UI.
+NOISY_ACTIONS = ("token_refreshed",)
+
+
 def get_logs(
     *,
     user_id: str | None = None,
@@ -65,6 +69,9 @@ def get_logs(
     if action:
         conditions.append("al.action = %s")
         params.append(action)
+    else:
+        conditions.append("al.action NOT IN %s")
+        params.append(NOISY_ACTIONS)
     if company_id:
         conditions.append("u.company_id = %s")
         params.append(company_id)

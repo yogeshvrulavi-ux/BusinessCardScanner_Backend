@@ -47,7 +47,7 @@ _hydrate_from_disk()
 def build_verify_ack_text(contact_name: str = "") -> str:
     greeting = f"Hi {(contact_name or 'there').strip().split()[0]}! " if contact_name else ""
     return (
-        f"{greeting}Thank you - your WhatsApp number is verified with CardSync. "
+        f"{greeting}Thank you - your WhatsApp number is verified with NameCardScan. "
         "Your business card details will be sent here shortly."
     )
 
@@ -113,7 +113,7 @@ def build_chat_reply_text(contact: dict[str, Any]) -> str:
     lines = [
         f"Hi {first_name}, thank you for connecting on WhatsApp!",
         "",
-        "We saved your business card in CardSync:",
+        "We saved your business card in NameCardScan:",
         f"Name: {contact_name}",
     ]
     if company:
