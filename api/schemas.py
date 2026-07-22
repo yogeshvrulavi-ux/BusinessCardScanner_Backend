@@ -161,10 +161,8 @@ class WipeAllDataBody(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    model_config = ConfigDict(json_schema_extra={"examples": [{"identifier": "superadmin@ulavi.com", "password": "SuperAdmin@123"}]})
-
     identifier: str = Field(..., description="Email or username")
-    password: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1, description="Account password")
 
 
 class RefreshTokenRequest(BaseModel):

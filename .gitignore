@@ -1,7 +1,8 @@
-# Secrets & credentials (never commit)
+﻿# Secrets & credentials (never commit)
 .env
 .env.*
 !/.env.example
+!/.env.*.example
 *-firebase-adminsdk-*.json
 serviceAccountKey.json
 *credentials*.json
@@ -25,3 +26,5 @@ uploads/
 
 # Runtime state
 data/
+
+dist/

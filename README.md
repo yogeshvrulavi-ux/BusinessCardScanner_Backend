@@ -109,8 +109,12 @@ Contact CRUD is served by Python (`/api/contacts`) — no separate Node local-db
 
 - Card OCR: **AWS Textract** (online, `POST /api/ocr`) + **PaddleOCR** (offline, browser).
 - Backend handles Zoho sync, WhatsApp, email (SMTP), and PostgreSQL when configured.
-- Set `FRONTEND_BASE_URL` to your Amplify (or local Vite) origin — invitation emails use this.
-- Set `BACKEND_BASE_URL`, `ALLOWED_ORIGINS`, and optional `CORS_ORIGIN_REGEX` in `.env`.
+- Copy `BusinessCardScanner_Backend/.env.production.example` → server `.env`, fill secrets, restart:
+  - `sudo systemctl restart business-card`
+- That template already sets:
+  - `FRONTEND_BASE_URL=https://www.namecardscan.com`
+  - `BACKEND_BASE_URL=https://api.namecardscan.com`
+  - `ALLOWED_ORIGINS=https://www.namecardscan.com,https://namecardscan.com`
 - Do not use Netlify URLs; they are rejected by URL helpers.
 
 ## Removed (do not use)

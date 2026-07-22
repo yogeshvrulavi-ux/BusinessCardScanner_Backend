@@ -148,6 +148,8 @@ def extract_websites(lines: List[str]) -> tuple[List[str], List[str]]:
     websites = []
     remaining_lines = []
     url_pattern = re.compile(r'(?:https?:\/\/)?(?:www\.)?[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]{2,}(?:\/[^\s]*)?', re.IGNORECASE)
+    # "Plot No.1151" / "H.No.12" look like domains to a naive pattern — never strip those.
+    false_domain = re.compile(r'\b(?:no|h\.?\s*no|plot|pin|fl|floor|rd|st|ave)\.\d', re.IGNORECASE)
     
     for line in lines:
         # Avoid matching emails as urls
@@ -156,14 +158,22 @@ def extract_websites(lines: List[str]) -> tuple[List[str], List[str]]:
             continue
             
         matches = url_pattern.findall(line)
-        if matches:
-            for match in matches:
-                if is_valid_website(match):
-                    websites.append(match.strip())
-                else:
-                    logger.info(f"[OCR Noise Filter] Rejected invalid website candidate: '{match}'")
-                    
-            new_line = url_pattern.sub('', line).strip()
+        kept_matches = []
+        for match in matches:
+            if false_domain.search(match) or re.fullmatch(r'[A-Za-z]{1,4}\.\d+', match):
+                logger.info(f"[OCR Noise Filter] Rejected address-like website candidate: '{match}'")
+                continue
+            if is_valid_website(match):
+                websites.append(match.strip())
+                kept_matches.append(match)
+            else:
+                logger.info(f"[OCR Noise Filter] Rejected invalid website candidate: '{match}'")
+
+        if kept_matches:
+            new_line = line
+            for match in kept_matches:
+                new_line = new_line.replace(match, '', 1)
+            new_line = new_line.strip()
             if len(new_line) > 2:
                 new_line = re.sub(r'^(w(eb(site)?)?)\s*[:\-\.]?\s*', '', new_line, flags=re.IGNORECASE).strip()
                 if len(new_line) > 2:
@@ -200,6 +210,32 @@ def extract_phones(lines: List[str]) -> tuple[List[str], List[str]]:
     
     # A broad international and domestic phone number pattern
     phone_pattern = re.compile(r'(?:(?:\+|00)\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)?\d{3,4}[\s.-]?\d{3,4}(?:[\s.-]?\d{2,4})?')
+    address_context = re.compile(
+        r'\b(?:plot|plt|pin|pincode|postal|zip|road|rd|street|st|floor|colony|nagar|'
+        r'house|door|sector|block|mouza|address)\b|,\s*\w+.*(pin|india)|\b\d{6}\b',
+        re.IGNORECASE,
+    )
+
+    def is_false_phone_match(match: str, line: str) -> bool:
+        """Avoid treating PIN codes / plot numbers as phone numbers."""
+        digits = "".join(c for c in match if c.isdigit())
+        if len(digits) == 6 and not match.strip().startswith("+"):
+            # 6-digit value on an address-like line is almost always a PIN.
+            if address_context.search(line) or re.search(r"[A-Za-z]\s*-\s*" + re.escape(digits), line):
+                return True
+            if len(digits) == 6 and len(match.strip()) <= 8:
+                return True
+        if len(digits) < 8:
+            return True
+        idx = line.find(match)
+        before = line[:idx] if idx >= 0 else ""
+        if re.search(
+            r"(?:plot|plt|pin|pincode|postal|zip|floor|house|door|no\.?|road|street|sector|block)\s*[:.#\-]*\s*$",
+            before,
+            re.IGNORECASE,
+        ):
+            return True
+        return False
 
     for line in lines:
         clean_line = re.sub(r'^(tel|phone|mobile|cell|m|p|t|f|office|direct)\s*[:\-\.]?\s*', '', line, flags=re.IGNORECASE).strip()
@@ -207,6 +243,8 @@ def extract_phones(lines: List[str]) -> tuple[List[str], List[str]]:
         matches = phone_pattern.findall(clean_line)
         matched_in_line = False
         for match in matches:
+            if is_false_phone_match(match, clean_line):
+                continue
             if is_valid_phone(match):
                 phones.append(match.strip())
                 matched_in_line = True
@@ -215,8 +253,9 @@ def extract_phones(lines: List[str]) -> tuple[List[str], List[str]]:
                 logger.info(f"[OCR Noise Filter] Rejected invalid phone candidate: '{match}'")
                 
         if matched_in_line:
-            clean_line = re.sub(r'^(tel|phone|mobile|cell|m|p|t|f|office|direct)\s*[:\-\.]?\s*', '', clean_line, flags=re.IGNORECASE).strip()
-            if len(clean_line) > 2:
+            clean_line = re.sub(r'^(tel|phone|mobile|cell|m|p|t|f|office|direct|support\s*no\.?)\s*[:\-\.]?\s*', '', clean_line, flags=re.IGNORECASE).strip()
+            # Drop leftover labels like "ID:" after email stripping on other paths.
+            if len(clean_line) > 2 and not re.match(r'^(?:id|email|e-?mail|web|www)\s*:?\s*$', clean_line, re.IGNORECASE):
                 remaining_lines.append(clean_line)
         else:
             remaining_lines.append(line)
@@ -362,21 +401,8 @@ def extract_name_and_designation(lines: List[str]) -> tuple[str, str, List[str]]
 
 def extract_address(lines: List[str]) -> tuple[str, List[str]]:
     """Extract address using heuristics (street suffixes, zip codes)."""
-    address_parts = []
-    remaining_lines = []
-    
-    address_patterns = re.compile(r'\b(street|st|avenue|ave|boulevard|blvd|road|rd|drive|drv|lane|ln|suite|ste|floor|fl|building|bldg|p\.?o\.?\s*box)\b', re.IGNORECASE)
-    zip_pattern = re.compile(r'\b\d{5}(?:-\d{4})?\b')
-    
-    for line in lines:
-        if address_patterns.search(line) or zip_pattern.search(line) or (len(line) > 5 and line[0].isdigit() and ',' in line):
-            # Clean up address prefixes
-            clean_line = re.sub(r'^(address|add|a|location)\s*[:\-\.]?\s*', '', line, flags=re.IGNORECASE).strip()
-            address_parts.append(clean_line)
-        else:
-            remaining_lines.append(line)
-            
-    return ", ".join(address_parts), remaining_lines
+    address_list, remaining_lines = extract_all_addresses(lines)
+    return ("\n".join(address_list[:1]) if address_list else ""), remaining_lines
 
 def extract_company(lines: List[str], emails: List[str], websites: List[str]) -> str:
     """Extract company name using suffixes or domain names from emails/websites."""
@@ -449,6 +475,11 @@ def repair_ocr_mistakes(text: str) -> str:
     def fix_web_space(match):
         orig = match.group(0)
         if '@' in orig:
+            return orig
+        # Do not treat "No.1151" / "Plot No.12" as website domains.
+        if re.search(r'\b(?:no|plot|pin|fl|floor|rd|st)\.\d', orig, re.IGNORECASE):
+            return orig
+        if re.fullmatch(r'[A-Za-z]{1,4}\.\d+', orig.strip()):
             return orig
         fixed = orig.replace(' ', '')
         fixed = re.sub(r'https?:/+', 'http://' if fixed.startswith('http:') else 'https://', fixed)
@@ -534,62 +565,254 @@ def extract_tax_numbers(text: str) -> List[str]:
     return taxes
 
 
-ADDRESS_LINE_PATTERN = re.compile(
-    r"\b(street|st|avenue|ave|boulevard|blvd|road|rd|drive|drv|lane|ln|suite|ste"
-    r"|floor|fl|building|bldg|block|plot|sector|phase|layout|nagar|colony|tower"
-    r"|complex|p\.?o\.?\s*box|pin\s*code|pincode|pin"
-    r"|mumbai|delhi|bengaluru|bangalore|hyderabad|chennai|kolkata|pune"
-    r"|gurugram|gurgaon|noida|ahmedabad|jaipur|kochi|coimbatore|india)\b",
+ADDRESS_STREET_PATTERN = re.compile(
+    r"\b(?:street|st\.?|avenue|ave\.?|boulevard|blvd\.?|road|rd\.?|drive|drv\.?|dr\.?"
+    r"|lane|ln\.?|suite|ste\.?|floor|fl\.?|building|bldg\.?|block|plot|plt\.?"
+    r"|sector|phase|layout|nagar|colony|tower|complex|mouza|place|pl\.?|court|ct\.?"
+    r"|parkway|pkwy\.?|square|sq\.?|house\s*no\.?|h\.?\s*no\.?|door\s*no\.?"
+    r"|p\.?\s*o\.?\s*box|post\s*office)\b",
     re.IGNORECASE,
 )
-# US zip (5 or 5+4) or Indian 6-digit PIN code.
-ADDRESS_ZIP_PATTERN = re.compile(r"\b\d{5}(?:-\d{4})?\b|\b\d{6}\b")
-ADDRESS_PREFIX_PATTERN = re.compile(r"^(address|add|location)\s*[:\-\.]?\s*", re.IGNORECASE)
+ADDRESS_PLACE_PATTERN = re.compile(
+    r"\b(?:mumbai|delhi|bengaluru|bangalore|hyderabad|chennai|kolkata|pune"
+    r"|gurugram|gurgaon|noida|ahmedabad|jaipur|kochi|cochin|coimbatore|varanasi"
+    r"|bhubaneswar|cuttack|puri|odisha|orissa|ernakulam|alappuzha|alleppey"
+    r"|thrissur|trivandrum|thiruvananthapuram|calicut|kozhikode|mangalore|mysore"
+    r"|indore|bhopal|lucknow|kanpur|patna|ranchi|raipur|surat|vadodara|nagpur"
+    r"|nashik|chandigarh|amritsar|ludhiana|udaipur|jodhpur|guwahati|shillong"
+    r"|imphal|agartala|gangtok|shimla|dehradun|haridwar|rishikesh|goa|panaji"
+    r"|kerala|tamil\s*nadu|karnataka|maharashtra|gujarat|rajasthan|punjab|haryana"
+    r"|bihar|west\s*bengal|uttar\s*pradesh|madhya\s*pradesh|telangana"
+    r"|andhra\s*pradesh|india|u\.?\s*p\.?)\b",
+    re.IGNORECASE,
+)
+# US zip (5 or 5+4), Indian 6-digit PIN, Pin-221002, City-751030.
+ADDRESS_ZIP_PATTERN = re.compile(
+    r"(?:\b(?:pin|pincode|pin\s*code|postal|zip)\b\s*[:.\-]?\s*)?\b\d{5}(?:-\d{4})?\b"
+    r"|(?:\b(?:pin|pincode|pin\s*code|postal|zip)\b\s*[:.\-]?\s*)?\b\d{6}\b"
+    r"|\b[A-Za-z][A-Za-z.\s]{1,28}-\s*\d{6}\b",
+    re.IGNORECASE,
+)
+ADDRESS_HOUSE_NO_PATTERN = re.compile(
+    r"(?:\b(?:plot|plt|house|h\.?\s*no\.?|door\s*no\.?|plot\s*no\.?)\b[\s.:#-]*)\d"
+    r"|(?:^\s*(?:no\.?|#)\s*[:.]?\s*\d)"
+    r"|(?:^\s*\d{1,4}\s*/\s*\d+)"
+    r"|(?:^\s*[A-Za-z]?\d[\w./\s-]*,)",
+    re.IGNORECASE,
+)
+ADDRESS_PREFIX_PATTERN = re.compile(
+    r"^(?:address|add(?:ress)?|location|loc)\s*[:\-.]?\s*",
+    re.IGNORECASE,
+)
+ADDRESS_FALSE_POSITIVE_PATTERN = re.compile(
+    r"\b(?:ministry|tourism|govt\.?|government|recognized|recognised|wholesale|"
+    r"partner|dream|magical|exploring|creating|memories|passion|journey|trusted|"
+    r"b2b|dmc\s+of|since\s+\d{4}|tour|tours?|trekking|adventure|holidays?|"
+    r"vacations?|explore\s+more|live\s+more|24\s*x\s*7|support\s*no|whatsapp)\b",
+    re.IGNORECASE,
+)
+EMAIL_LINE_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+URL_LINE_PATTERN = re.compile(
+    r"(?:https?://|www\.)[\w\-.]+\.[a-zA-Z]{2,}|\b[a-zA-Z0-9][a-zA-Z0-9-]*\.(?:com|co\.in|in|org|net)\b",
+    re.IGNORECASE,
+)
+ADDRESS_BRAND_NOISE_PATTERN = re.compile(
+    r"\b(?:pvt\.?|ltd\.?|limited|llp|dmc|travels?|hotels?|vacations?|holidays?|"
+    r"tours?|adventure|solutions|technologies|private)\b",
+    re.IGNORECASE,
+)
 
 
-def _is_address_line(line: str) -> bool:
-    return bool(
-        ADDRESS_LINE_PATTERN.search(line)
+def _is_address_excluded_line(line: str) -> bool:
+    if EMAIL_LINE_PATTERN.search(line) or URL_LINE_PATTERN.search(line):
+        return True
+    # City/service-area footers: "Varanasi | Prayagraj | Ayodhya"
+    if line.count("|") >= 1 and ADDRESS_PLACE_PATTERN.search(line) and not ADDRESS_HOUSE_NO_PATTERN.search(line):
+        return True
+    # Company legal names are not postal addresses.
+    if any(re.search(rf"\b{re.escape(suffix)}\b", line, re.IGNORECASE) for suffix in COMPANY_SUFFIXES):
+        if not ADDRESS_HOUSE_NO_PATTERN.search(line) and not ADDRESS_ZIP_PATTERN.search(line):
+            return True
+    if ADDRESS_BRAND_NOISE_PATTERN.search(line) and not (
+        ADDRESS_HOUSE_NO_PATTERN.search(line)
         or ADDRESS_ZIP_PATTERN.search(line)
-        or (len(line) > 5 and line[0].isdigit() and "," in line)
-    )
+        or ADDRESS_STREET_PATTERN.search(line)
+    ):
+        return True
+    if ADDRESS_FALSE_POSITIVE_PATTERN.search(line) and not (
+        ADDRESS_HOUSE_NO_PATTERN.search(line) or ADDRESS_ZIP_PATTERN.search(line)
+    ):
+        return True
+    # Leftover labels after phone/email stripping.
+    if re.match(r"^(?:id|email|e-?mail|web|www|mobile|phone|tel)\s*:?\s*$", line, re.IGNORECASE):
+        return True
+    return False
+
+
+def _is_strong_address_line(line: str) -> bool:
+    if not line or len(line) < 4 or _is_address_excluded_line(line):
+        return False
+    if ADDRESS_STREET_PATTERN.search(line):
+        return True
+    if ADDRESS_HOUSE_NO_PATTERN.search(line):
+        return True
+    if ADDRESS_ZIP_PATTERN.search(line):
+        return True
+    if len(line) > 5 and re.match(r"^\s*[\dA-Za-z]", line) and re.search(r"\d", line) and "," in line:
+        return True
+    return False
+
+
+def _is_weak_address_line(line: str) -> bool:
+    if not line or len(line) < 4 or _is_address_excluded_line(line):
+        return False
+    if _is_strong_address_line(line):
+        return True
+    if not ADDRESS_PLACE_PATTERN.search(line):
+        return False
+    # Reject short all-caps brand lines that only mention a state/country.
+    if line.isupper() and len(line.split()) <= 3 and not re.search(r"\d", line) and "," not in line:
+        return False
+    return bool(re.search(r"\d", line) or "," in line or len(line.split()) >= 2)
+
+
+def _is_address_continuation(line: str) -> bool:
+    if not line or len(line) < 3 or len(line) > 80:
+        return False
+    if _is_address_excluded_line(line):
+        return False
+    if _is_strong_address_line(line) or _is_weak_address_line(line):
+        return True
+    words = line.split()
+    if len(words) > 8:
+        return False
+    # Landmark phrases between locality lines (not person names).
+    if is_likely_name_line(line) and len(words) <= 3:
+        return False
+    return bool(re.match(r"^[A-Za-z0-9]", line))
+
+
+def _line_has_address_signal(line: str) -> bool:
+    if ADDRESS_STREET_PATTERN.search(line) or ADDRESS_HOUSE_NO_PATTERN.search(line) or ADDRESS_ZIP_PATTERN.search(line):
+        return True
+    return bool(ADDRESS_PLACE_PATTERN.search(line) and not ADDRESS_FALSE_POSITIVE_PATTERN.search(line))
+
+
+def _address_block_score(block: str) -> int:
+    """Prefer real postal blocks (plot/PIN/road) over country/company leftovers."""
+    score = 0
+    for line in block.split("\n"):
+        if ADDRESS_ZIP_PATTERN.search(line):
+            score += 50
+        if ADDRESS_HOUSE_NO_PATTERN.search(line):
+            score += 40
+        if ADDRESS_STREET_PATTERN.search(line):
+            score += 30
+        if ADDRESS_PLACE_PATTERN.search(line):
+            score += 10
+        if "," in line:
+            score += 5
+        if ADDRESS_BRAND_NOISE_PATTERN.search(line):
+            score -= 25
+    score += min(20, len(block.split("\n")) * 5)
+    return score
 
 
 def extract_all_addresses(lines: List[str]) -> tuple[List[str], List[str]]:
     """Group consecutive address lines into complete multi-line address blocks.
 
     Multi-line addresses (e.g. building / street / city-PIN on separate lines)
-    are joined with newlines so the full address is preserved. A single
-    non-matching line sandwiched between two address lines (e.g. an area name)
-    is treated as part of the same address block.
+    are joined with newlines so the full address is preserved. Landmark-style
+    Indian addresses without a PIN are kept when a city/locality token is present.
     """
-    matches = [_is_address_line(line) for line in lines]
+    strong = [_is_strong_address_line(line) for line in lines]
+    weak = [_is_weak_address_line(line) for line in lines]
+    include = [s or w for s, w in zip(strong, weak)]
+
+    # Fill gaps between two address seeds (landmark / locality middle lines).
+    seed_idxs = [i for i, flag in enumerate(include) if flag]
+    for idx in range(len(lines)):
+        if include[idx]:
+            continue
+        left = next((j for j in reversed(seed_idxs) if j < idx), None)
+        right = next((j for j in seed_idxs if j > idx), None)
+        if left is None or right is None or (right - left) > 4:
+            continue
+        if _is_address_excluded_line(lines[idx]):
+            continue
+        include[idx] = True
 
     # Sandwich rule: keep short connector lines that sit between address lines.
-    include = list(matches)
     for idx in range(1, len(lines) - 1):
-        if not include[idx] and include[idx - 1] and matches[idx + 1] and len(lines[idx]) <= 60:
+        if (
+            not include[idx]
+            and include[idx - 1]
+            and (include[idx + 1] or strong[idx + 1] or weak[idx + 1])
+            and len(lines[idx]) <= 70
+            and _is_address_continuation(lines[idx])
+        ):
             include[idx] = True
+
+    # Expand from seeds to adjacent continuation / weak place lines.
+    changed = True
+    while changed:
+        changed = False
+        for idx, line in enumerate(lines):
+            if include[idx]:
+                continue
+            prev_kept = idx > 0 and include[idx - 1]
+            next_kept = idx < len(lines) - 1 and include[idx + 1]
+            if not (prev_kept or next_kept):
+                continue
+            if strong[idx] or weak[idx] or _is_address_continuation(line):
+                if (
+                    is_likely_name_line(line)
+                    and not (prev_kept and next_kept)
+                    and not weak[idx]
+                    and not strong[idx]
+                ):
+                    continue
+                include[idx] = True
+                changed = True
 
     address_blocks: List[str] = []
     remaining_lines: List[str] = []
     current_block: List[str] = []
+    current_has_signal = False
 
-    for line, keep in zip(lines, include):
-        if keep:
-            clean_line = ADDRESS_PREFIX_PATTERN.sub("", line).strip()
-            if clean_line:
-                current_block.append(clean_line)
+    def flush() -> None:
+        nonlocal current_block, current_has_signal
+        if not current_block:
+            return
+        if current_has_signal or any(_line_has_address_signal(item) for item in current_block):
+            cleaned = [
+                ADDRESS_PREFIX_PATTERN.sub("", item).strip()
+                for item in current_block
+            ]
+            cleaned = [item for item in cleaned if item]
+            if cleaned:
+                address_blocks.append("\n".join(cleaned))
         else:
-            if current_block:
-                address_blocks.append("\n".join(current_block))
-                current_block = []
+            remaining_lines.extend(current_block)
+        current_block = []
+        current_has_signal = False
+
+    for line, keep, is_strong in zip(lines, include, strong):
+        if keep:
+            current_block.append(line)
+            if is_strong or _line_has_address_signal(line):
+                current_has_signal = True
+        else:
+            flush()
             remaining_lines.append(line)
+    flush()
 
-    if current_block:
-        address_blocks.append("\n".join(current_block))
-
+    address_blocks.sort(key=_address_block_score, reverse=True)
     return address_blocks, remaining_lines
+
+
+# Backward-compatible alias used by older helpers/tests.
+ADDRESS_LINE_PATTERN = ADDRESS_STREET_PATTERN
 
 
 def build_confidence(result: Dict[str, Any], raw_text: str) -> Dict[str, float]:
