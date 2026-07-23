@@ -456,9 +456,15 @@ def forgot_password(email: str, *, ip: str = "", user_agent: str = "") -> dict:
         )
 
     try:
-        send_forgot_password_otp(email, otp)
+        email_result = send_forgot_password_otp(email, otp)
+        if not email_result.get("sent"):
+            logger.error(
+                "Password reset OTP email failed for %s: %s",
+                email,
+                email_result.get("error") or email_result.get("reason"),
+            )
     except Exception:
-        pass
+        logger.exception("Password reset OTP email raised for %s", email)
 
     return {"detail": "If the email is registered, a reset code has been sent."}
 

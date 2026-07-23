@@ -215,7 +215,7 @@ def create_invitation(
 
     inviter_name = str(row.get("inviter_name") or "NameCardScan").strip()
     org_name = (company_name or "").strip() or "NameCardScan"
-    send_invitation_email(
+    email_result = send_invitation_email(
         to_email=email,
         inviter_name=inviter_name,
         role=role,
@@ -223,6 +223,17 @@ def create_invitation(
         raw_token=raw_token,
         expires_hours=INVITATION_EXPIRE_HOURS,
     )
+    if not email_result.get("sent"):
+        err = (
+            email_result.get("error")
+            or email_result.get("reason")
+            or "Failed to send invitation email."
+        )
+        raise InvitationError(
+            "EMAIL_SEND_FAILED",
+            f"Invitation was created but the email could not be sent: {err}",
+            502,
+        )
 
     audit_service.log_action(
         inviter_id,
@@ -351,7 +362,7 @@ def resend_invitation(
         )
         inviter = cur.fetchone()
 
-    send_invitation_email(
+    email_result = send_invitation_email(
         to_email=row["email"],
         inviter_name=str((inviter or {}).get("inviter_name") or "NameCardScan"),
         role=row["role"],
@@ -359,6 +370,17 @@ def resend_invitation(
         raw_token=raw_token,
         expires_hours=INVITATION_EXPIRE_HOURS,
     )
+    if not email_result.get("sent"):
+        err = (
+            email_result.get("error")
+            or email_result.get("reason")
+            or "Failed to send invitation email."
+        )
+        raise InvitationError(
+            "EMAIL_SEND_FAILED",
+            f"Invitation email could not be sent: {err}",
+            502,
+        )
     audit_service.log_action(
         actor["id"],
         AUDIT_INVITE_RESENT,

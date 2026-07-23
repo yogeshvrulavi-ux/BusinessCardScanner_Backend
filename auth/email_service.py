@@ -11,14 +11,52 @@ from config.urls import get_frontend_base_url
 
 logger = logging.getLogger(__name__)
 
+_SMTP_AUTH_HELP = (
+    "SMTP authentication failed. If using Gmail, create a Google App Password "
+    "(not your login password): enable 2-Step Verification, then visit "
+    "https://myaccount.google.com/apppasswords and set GMAIL_APP_PASSWORD "
+    "to the 16-character password for GMAIL_USER."
+)
+
+_SMTP_NETWORK_HINT = (
+    "Some hosts block outbound SMTP on port 587. "
+    "Use a host/network that permits SMTP, or an SMTP relay that allows it."
+)
+
+
+def _normalize_env(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.strip().strip('"').strip("'")
+
+
+def _normalize_smtp_password(value: str | None) -> str:
+    """Gmail app passwords are 16 chars; strip spaces copied from the Google UI."""
+    return _normalize_env(value).replace(" ", "")
+
 
 def _smtp_config() -> dict[str, str]:
+    user = _normalize_env(os.getenv("SMTP_USER")) or _normalize_env(os.getenv("GMAIL_USER"))
+    password = _normalize_smtp_password(os.getenv("SMTP_PASSWORD")) or _normalize_smtp_password(
+        os.getenv("GMAIL_APP_PASSWORD")
+    )
+    # From must match the authenticated mailbox for Gmail/most providers.
+    from_addr = (
+        _normalize_env(os.getenv("SMTP_FROM"))
+        or _normalize_env(os.getenv("BUSINESS_EMAIL"))
+        or user
+        or "noreply@cardsync.ai"
+    )
     return {
-        "host": os.getenv("SMTP_HOST", os.getenv("GMAIL_SMTP_HOST", "smtp.gmail.com")),
-        "port": os.getenv("SMTP_PORT", os.getenv("GMAIL_SMTP_PORT", "587")),
-        "user": os.getenv("SMTP_USER", os.getenv("GMAIL_USER", "")),
-        "password": os.getenv("SMTP_PASSWORD", os.getenv("GMAIL_APP_PASSWORD", "")),
-        "from": os.getenv("SMTP_FROM", os.getenv("BUSINESS_EMAIL", "noreply@cardsync.ai")),
+        "host": _normalize_env(os.getenv("SMTP_HOST"))
+        or _normalize_env(os.getenv("GMAIL_SMTP_HOST"))
+        or "smtp.gmail.com",
+        "port": _normalize_env(os.getenv("SMTP_PORT"))
+        or _normalize_env(os.getenv("GMAIL_SMTP_PORT"))
+        or "587",
+        "user": user,
+        "password": password,
+        "from": from_addr,
     }
 
 
@@ -35,11 +73,23 @@ def _send_email(to: str, subject: str, html_body: str) -> dict:
     msg.set_content(html_body, subtype="html")
 
     try:
-        with smtplib.SMTP(cfg["host"], int(cfg["port"])) as server:
+        with smtplib.SMTP(cfg["host"], int(cfg["port"]), timeout=30) as server:
+            server.ehlo()
             server.starttls()
+            server.ehlo()
             server.login(cfg["user"], cfg["password"])
             server.send_message(msg)
+        logger.info("Auth email sent to %s (%s)", to, subject)
         return {"sent": True}
+    except smtplib.SMTPAuthenticationError as exc:
+        logger.error("Failed to send email to %s: %s", to, exc)
+        return {"sent": False, "error": _SMTP_AUTH_HELP}
+    except OSError as exc:
+        logger.error("Failed to send email to %s: %s", to, exc)
+        return {
+            "sent": False,
+            "error": f"Network error connecting to SMTP: {exc}. {_SMTP_NETWORK_HINT}",
+        }
     except Exception as exc:
         logger.error("Failed to send email to %s: %s", to, exc)
         return {"sent": False, "error": str(exc)}
