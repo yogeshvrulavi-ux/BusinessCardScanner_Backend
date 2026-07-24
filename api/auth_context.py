@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 from fastapi import Request
+
+from auth.constants import ROLE_ADMIN, ROLE_SUPER_ADMIN, ROLE_USER
+
+logger = logging.getLogger(__name__)
 
 
 def get_request_app_user(request: Request) -> dict[str, Any] | None:
@@ -44,10 +50,74 @@ def get_request_app_user_for_sync(request: Request) -> dict[str, Any] | None:
     return get_request_app_user(request)
 
 
+def _superadmin_env_email() -> str | None:
+    email = (os.getenv("SUPERADMIN_EMAIL") or "").strip().lower()
+    return email or None
+
+
+def _lookup_user_email(user_id: str) -> str | None:
+    """Fetch a user's email by id (for Admin parent of a scanning User)."""
+    from db.pool import db_cursor
+
+    try:
+        with db_cursor(commit=False) as cur:
+            cur.execute(
+                """
+                SELECT email FROM users
+                WHERE id = %s AND deleted_at IS NULL AND is_active = TRUE
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+    except Exception as exc:
+        logger.error("Failed to look up receive parent email for %s: %s", user_id, exc)
+        return None
+    if not row:
+        return None
+    return str(row.get("email") or "").strip().lower() or None
+
+
 def get_scanner_email_from_request(request: Request) -> str | None:
-    """Logged-in CardSync user email — CC on thank-you emails (Owner)."""
+    """Logged-in scanner email (legacy helper). Prefer get_receive_email_from_request."""
     user = get_request_app_user(request)
     if not user:
         return None
     email = str(user.get("email") or "").strip().lower()
     return email or None
+
+
+def get_receive_email_from_request(request: Request) -> str | None:
+    """
+    Who gets the scanned-details (receive) email for this scan.
+
+    Hierarchy:
+      USER  → their Admin's email (users.admin_id)
+      ADMIN → SUPERADMIN_EMAIL from .env
+      SUPER_ADMIN → their own email (fallback SUPERADMIN_EMAIL)
+    """
+    user = get_request_app_user(request)
+    if not user:
+        return None
+
+    role = str(user.get("role") or "").strip().upper()
+
+    if role == ROLE_USER:
+        admin_id = str(user.get("admin_id") or "").strip()
+        if admin_id:
+            admin_email = _lookup_user_email(admin_id)
+            if admin_email:
+                return admin_email
+        logger.warning(
+            "User %s has no Admin email; falling back to SUPERADMIN_EMAIL",
+            user.get("id"),
+        )
+        return _superadmin_env_email()
+
+    if role == ROLE_ADMIN:
+        return _superadmin_env_email()
+
+    if role == ROLE_SUPER_ADMIN:
+        own = str(user.get("email") or "").strip().lower()
+        return own or _superadmin_env_email()
+
+    return _superadmin_env_email()

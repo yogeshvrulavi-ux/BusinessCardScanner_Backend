@@ -28,14 +28,16 @@ DEFAULT_SMTP_PORT = 587
 SUBJECT = "Thank You for Your Interest"
 CC_SCANNED_SUBJECT_PREFIX = "Scanned contact:"
 
-# Brand palette (inline-safe hex values for email clients)
+# Brand palette aligned with NameCardScan UI (Inter / cyan-teal)
 _BRAND_PRIMARY = "#0891b2"
 _BRAND_PRIMARY_DARK = "#0e7490"
-_BRAND_ACCENT = "#7c3aed"
+_BRAND_ACCENT = "#0e7490"
 _BRAND_TEXT = "#1e293b"
 _BRAND_MUTED = "#64748b"
 _BRAND_SURFACE = "#f8fafc"
 _BRAND_BORDER = "#e2e8f0"
+_FONT_SANS = "'Inter',Arial,Helvetica,sans-serif"
+_FONT_DISPLAY = "'Inter Tight','Inter',Arial,Helvetica,sans-serif"
 
 
 def _normalize_env(value: str | None) -> str:
@@ -47,14 +49,21 @@ def _normalize_env(value: str | None) -> str:
 _PDF_STATIC_PATH = "/static/pdfs/ULACAB_VC_IN-SG_Mobile_Numbers.pdf"
 
 
-def _public_api_base() -> str:
-    from config.urls import get_backend_base_url
+def _public_api_base() -> str | None:
+    from config.urls import try_backend_base_url
 
-    return get_backend_base_url()
+    return try_backend_base_url()
 
 
 def _pdf_download_href() -> str:
-    return f"{_public_api_base()}{_PDF_STATIC_PATH}"
+    """Public PDF link for thank-you HTML. Empty when BACKEND_BASE_URL is unset."""
+    base = _public_api_base()
+    if not base:
+        logger.warning(
+            "BACKEND_BASE_URL unset — thank-you email will omit the PDF download link."
+        )
+        return ""
+    return f"{base}{_PDF_STATIC_PATH}"
 
 
 def _normalize_gmail_app_password(value: str | None) -> str:
@@ -111,6 +120,18 @@ def is_gmail_configured() -> bool:
 
 def smtp_sender_email() -> str:
     return BUSINESS_EMAIL or SMTP_USER
+
+
+def receive_inbox_email() -> str | None:
+    """Fallback receive inbox from SUPERADMIN_EMAIL when hierarchy lookup is unavailable."""
+    inbox = _normalize_env(os.getenv("SUPERADMIN_EMAIL"))
+    return inbox or None
+
+
+def _cc_recipients_for_scan(receive_email: str | None = None) -> list[str]:
+    """Receive template recipient — Admin (for User scans) or SuperAdmin (for Admin scans)."""
+    email = str(receive_email or "").strip()
+    return [email] if email else []
 
 
 def is_email_configured() -> bool:
@@ -412,8 +433,10 @@ def _contact_detail_rows() -> str:
         rows.append(
             f'<tr>'
             f'<td style="padding:6px 0;color:{_BRAND_MUTED};font-size:13px;'
+            f"font-family:{_FONT_SANS};"
             f'width:72px;vertical-align:top;">{safe_label}</td>'
             f'<td style="padding:6px 0;color:{_BRAND_TEXT};font-size:13px;'
+            f"font-family:{_FONT_SANS};"
             f'vertical-align:top;">{cell}</td>'
             f"</tr>"
         )
@@ -487,8 +510,10 @@ def _scanned_contact_detail_rows(contact: dict[str, Any]) -> str:
         rendered.append(
             f'<tr>'
             f'<td style="padding:10px 16px;color:{_BRAND_MUTED};font-size:13px;'
+            f"font-family:{_FONT_SANS};"
             f'width:120px;vertical-align:top;border-bottom:1px solid {_BRAND_BORDER};">{safe_label}</td>'
             f'<td style="padding:10px 16px;color:{_BRAND_TEXT};font-size:13px;'
+            f"font-family:{_FONT_SANS};"
             f'vertical-align:top;border-bottom:1px solid {_BRAND_BORDER};">{safe_value}</td>'
             f"</tr>"
         )
@@ -510,6 +535,7 @@ def build_cc_scanned_contact_body(contact: dict[str, Any]) -> tuple[str, str]:
         detail_rows=detail_rows,
         year=time.strftime("%Y"),
         brand_primary=_BRAND_PRIMARY,
+        brand_primary_dark=_BRAND_PRIMARY_DARK,
         brand_text=_BRAND_TEXT,
         brand_muted=_BRAND_MUTED,
         brand_surface=_BRAND_SURFACE,
@@ -807,14 +833,14 @@ async def schedule_email_for_contact(
 
     contact_name = extract_contact_name(contact)
     recipient = _resolve_recipient(validated_or_error, test_override=test_override)
-    raw_cc = [scanner_email] if scanner_email else None
-    cc_list, cc_invalid = _prepare_cc_addresses(raw_cc, to_address=recipient)
+    raw_cc = _cc_recipients_for_scan(scanner_email)
+    cc_list, cc_invalid = _prepare_cc_addresses(raw_cc or None, to_address=recipient)
     skipped["recipient_email"] = recipient
     skipped["cc_emails"] = cc_list
     if cc_invalid:
         skipped["cc_invalid"] = cc_invalid
     logger.info(
-        "Email dynamic send -> to (User)=%s cc (Owner)=%s name=%s",
+        "Email dynamic send -> to (contact)=%s receive/cc (manager)=%s name=%s",
         _redact_email(recipient),
         [_redact_email(e) for e in cc_list] or "(none)",
         contact_name or "unknown",

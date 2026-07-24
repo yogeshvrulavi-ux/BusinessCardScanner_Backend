@@ -1,8 +1,9 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from api.auth_context import get_receive_email_from_request
 from api.outreach import (
     body_to_outreach_contact,
     email_response,
@@ -228,7 +229,7 @@ async def test_email_message(request: EmailTestRequest):
 
 
 @router.post("/api/outreach/thank-you", summary="Send thank-you after review save")
-async def send_thank_you_outreach(body: LocalContactBody):
+async def send_thank_you_outreach(body: LocalContactBody, request: Request):
     try:
         contact = body_to_outreach_contact(body)
         whatsapp_result, email_result = await schedule_outreach_for_contact(
@@ -237,6 +238,7 @@ async def send_thank_you_outreach(body: LocalContactBody):
             contact_id=None,
             skip_whatsapp=body.skipWhatsApp,
             skip_email=body.skipEmail,
+            scanner_email=get_receive_email_from_request(request),
         )
         return {
             "success": True,

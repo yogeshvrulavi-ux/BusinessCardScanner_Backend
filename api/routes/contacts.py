@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
-from api.auth_context import get_scanner_email_from_request
+from api.auth_context import get_receive_email_from_request
 from api.outreach import (
     email_response,
     is_online_mode,
@@ -110,6 +110,7 @@ async def create_contact(
             contact_id=result.get("id"),
             skip_whatsapp=bool(contact_data.get("skipWhatsApp")),
             skip_email=bool(contact_data.get("skipEmail")),
+            scanner_email=get_receive_email_from_request(request),
         )
         return {
             **result,
@@ -230,7 +231,7 @@ async def create_contact_json(
                     skip_whatsapp=body.skipWhatsApp,
                     skip_email=body.skipEmail,
                     log_context="create-contact",
-                    scanner_email=get_scanner_email_from_request(request),
+                    scanner_email=get_receive_email_from_request(request),
                 )
                 response.update(whatsapp_response(whatsapp_result))
                 response.update(email_response(email_result))

@@ -265,6 +265,7 @@ def fire_post_save_outreach(
     contact: dict[str, Any] | None = None,
     skip_whatsapp: bool = False,
     skip_email: bool = False,
+    scanner_email: str | None = None,
 ) -> None:
     """Fire-and-forget outreach after contact save."""
     async def _run() -> None:
@@ -273,6 +274,7 @@ def fire_post_save_outreach(
             contact=contact,
             skip_whatsapp=skip_whatsapp,
             skip_email=skip_email,
+            scanner_email=scanner_email,
         )
 
     asyncio.create_task(_run())
